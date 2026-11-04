@@ -12,6 +12,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export MPLBACKEND=Agg
+# The pod sees every core of the host (nproc says 96) but is allowed ~8.
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8} MKL_NUM_THREADS=${MKL_NUM_THREADS:-8}
+
+# Ubuntu 24.04 templates forbid pip in the system Python (PEP 668) and ship
+# Debian packages pip cannot replace (blinker, cryptography). Work in a venv
+# that still sees the torch of the template. Later commands need it too:
+#     export PATH=/workspace/venv/bin:$PATH
+VENV=${VENV:-/workspace/venv}
+if [ ! -x "$VENV/bin/python" ]; then
+    python3 -m venv --system-site-packages "$VENV"
+fi
+export PATH="$VENV/bin:$PATH" PIP_ROOT_USER_ACTION=ignore
 
 log() { echo "$(date +%H:%M:%S) $*"; }
 
