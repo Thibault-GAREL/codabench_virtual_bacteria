@@ -30,6 +30,31 @@ sign is gone. Raw coordinates are replaced by what they mean:
 - ``is_partial`` (gene cut by the end of a contig) and ``is_split`` (gene in
   several pieces).
 
+Sequence signals known to drive expression, computed per gene:
+
+- ``sd_score`` (0 to 6 bases of AGGAGG) and ``sd_spacing``: the best
+  Shine-Dalgarno site 20 to 9 bp before the start codon;
+- ``sigma70_score`` (0 to 12), ``sigma70_m35``, ``sigma70_m10`` and
+  ``sigma70_dist``: the best TTGACA / TATAAT pair 15 to 19 bp apart in the
+  upstream sequence (a sigma 70 promoter);
+- ``cai``: codon adaptation index against the ribosomal proteins of the same
+  genome (``is_ribosomal_protein``), the classic proxy of expression level;
+- ``n_copies``: genes of the same genome with the very same sequence (their
+  reads split between the copies).
+
+Validation folds that mimic the held-out regions (``N_FOLDS`` folds):
+
+- ``gene_fold`` by ``gene_family``, the genes linked by an ortholog group or
+  a shared protein id (region C never shares either with training);
+- ``run_fold`` by experiment, so replicates stay together (region B never
+  shares an experiment with training);
+- ``pair_fold`` in the observations, a hash of the (gene, run) pair (A).
+
+Run quality from the training counts, to weight or drop outliers at fit time:
+``qc_n_genes``, ``qc_zero_frac``, ``qc_top_frac`` (share of the reads on the
+top gene), ``qc_corr`` (correlation with the mean profile of the genome) and
+``qc_outlier``. They are NaN for runs absent from training.
+
 The raw ``Chr``, ``Start``, ``End`` and ``Strand`` stay in
 feature_annotation.csv, at the same row as ``gene_idx``.
 
@@ -40,6 +65,7 @@ import argparse
 import json
 import re
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -47,6 +73,8 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "benchmark" / "data" / "bacteria"
@@ -63,6 +91,16 @@ SEQ_SCHEMA = pa.schema([("gene_idx", pa.int32()),
                         ("upstream_seq", pa.string()),
                         ("cds_seq", pa.string()),
                         ("protein_seq", pa.string())])
+N_FOLDS = 5
+RIBOSOMAL = re.compile(r"ribosomal (?:subunit )?protein [LS]\d")
+NOT_RIBOSOMAL = re.compile(r"ase\b|-like")
+# A run is an outlier when its profile barely follows its genome's mean
+# profile, or when most of its genes got no read.
+QC_MIN_CORR = 0.5
+QC_MAX_ZERO = 0.5
+BASE_CODE = np.full(256, 4, dtype=np.uint8)
+for _i, _b in enumerate("ACGT"):
+    BASE_CODE[ord(_b)] = BASE_CODE[ord(_b.lower())] = _i
 
 
 def log(message):
@@ -148,6 +186,106 @@ def lineage_ranks(lineage):
     return {"domain": lineage[0] if lineage else None,
             "phylum": pick("ota"), "order": pick("ales"),
             "family": family, "genus": genus}
+
+
+def motif_matches(arr, motif):
+    """``out[i, p]`` = bases of ``motif`` matched at position p of row i."""
+    width = arr.shape[1] - len(motif) + 1
+    out = np.zeros((arr.shape[0], width), dtype=np.int8)
+    for k, base in enumerate(motif.encode()):
+        out += arr[:, k:k + width] == base
+    return out
+
+
+def upstream_signals(upstreams, size):
+    """Shine-Dalgarno and sigma 70 promoter scores of upstream sequences.
+
+    Each upstream sequence is right aligned, so its last base is the one just
+    before the start codon. Missing bases are N and never match.
+    """
+    n = len(upstreams)
+    arr = np.full((n, size), ord("N"), dtype=np.uint8)
+    for i, s in enumerate(upstreams):
+        b = (s or "").upper().encode("ascii", "replace")[-size:]
+        if b:
+            arr[i, size - len(b):] = np.frombuffer(b, dtype=np.uint8)
+
+    # Shine-Dalgarno AGGAGG starting 20 to 9 bp before the start codon
+    sd = motif_matches(arr[:, size - 20:size - 3], "AGGAGG")
+    sd_best = sd.argmax(axis=1)
+    sd_score = sd[np.arange(n), sd_best]
+    sd_spacing = 14 - sd_best            # bp between the site and the start
+
+    # Sigma 70: -35 box TTGACA, 15 to 19 bp spacer, -10 box TATAAT
+    m35 = motif_matches(arr, "TTGACA")
+    m10 = motif_matches(arr, "TATAAT")
+    width = m10.shape[1]
+    best = np.full(n, -1, dtype=np.int16)
+    best10 = np.zeros(n, dtype=np.int16)
+    best35 = np.zeros(n, dtype=np.int16)
+    pos10 = np.zeros(n, dtype=np.int64)
+    rows = np.arange(n)
+    for spacer in range(15, 20):
+        shift = 6 + spacer
+        comb = m35[:, :width - shift].astype(np.int16) + m10[:, shift:]
+        arg = comb.argmax(axis=1)
+        val = comb[rows, arg]
+        better = val > best
+        best[better] = val[better]
+        pos10[better] = arg[better] + shift
+        best10[better] = m10[rows, arg + shift][better]
+        best35[better] = m35[rows, arg][better]
+    return {"sd_score": sd_score.astype(np.int8),
+            "sd_spacing": sd_spacing.astype(np.int8),
+            "sigma70_score": best.astype(np.int8),
+            "sigma70_m35": best35.astype(np.int8),
+            "sigma70_m10": best10.astype(np.int8),
+            # bp between the end of the -10 box and the start codon
+            "sigma70_dist": (size - (pos10 + 6)).astype(np.int16)}
+
+
+def codon_adaptation(cds_list, reference, table_id):
+    """Codon adaptation index of each gene against the ``reference`` genes.
+
+    A codon's weight is its count in the reference set divided by the count of
+    the most used synonymous codon. The CAI of a gene is the geometric mean of
+    the weights of its codons, start and stop codons left out.
+    """
+    from Bio.Data.CodonTable import unambiguous_dna_by_id
+
+    n = len(cds_list)
+    if reference.sum() < 10:
+        return np.full(n, np.nan)
+    families = {}
+    for codon, aa in unambiguous_dna_by_id[table_id].forward_table.items():
+        idx = 16 * "ACGT".index(codon[0]) + 4 * "ACGT".index(codon[1]) \
+            + "ACGT".index(codon[2])
+        families.setdefault(aa, []).append(idx)
+
+    lengths = np.array([len(c) // 3 for c in cds_list], dtype=np.int64)
+    joined = "".join(c[:3 * k] for c, k in zip(cds_list, lengths))
+    bases = BASE_CODE[np.frombuffer(joined.encode("ascii", "replace"),
+                                    dtype=np.uint8)].reshape(-1, 3)
+    valid = (bases < 4).all(axis=1)
+    code = np.where(valid, bases[:, 0].astype(np.int64) * 16
+                    + bases[:, 1] * 4 + bases[:, 2], 0)
+    gene = np.repeat(np.arange(n), lengths)
+    ends = np.cumsum(lengths)
+    keep = valid.copy()
+    has = lengths > 0
+    keep[(ends - lengths)[has]] = False      # start codon
+    keep[(ends - 1)[has]] = False            # stop codon
+
+    counts = np.bincount(code[keep & reference[gene]], minlength=64) + 0.5
+    log_w = np.full(64, np.nan)
+    for idx in families.values():
+        if len(idx) > 1:
+            idx = np.array(idx)
+            log_w[idx] = np.log(counts[idx] / counts[idx].max())
+    use = keep & ~np.isnan(log_w[code])
+    total = np.bincount(gene[use], weights=log_w[code[use]], minlength=n)
+    k = np.bincount(gene[use], minlength=n)
+    return np.where(k > 0, np.exp(total / np.maximum(k, 1)), np.nan)
 
 
 def process_genome(task):
@@ -309,8 +447,29 @@ def process_genome(task):
             out["ori_position"][rows] = pos
             leading[rows] = lead.astype(float)
 
+    # Sequence signals, codon usage and identical copies
+    signals = upstream_signals(seq_rows["upstream_seq"], upstream)
+    products = pd.Series(text["product"], dtype=object).fillna("")
+    ribosomal = (products.str.contains(RIBOSOMAL)
+                 & ~products.str.contains(NOT_RIBOSOMAL)).to_numpy()
+    hypothetical = products.str.contains("hypothetical protein",
+                                         regex=False).to_numpy()
+    tables = Counter(int(f.qualifiers.get("transl_table", ["11"])[0])
+                     for f in index.values() if f.type == "CDS")
+    table_id = tables.most_common(1)[0][0] if tables else 11
+    cds_upper = [(c or "").upper() for c in seq_rows["cds_seq"]]
+    cai = codon_adaptation(cds_upper, ribosomal, table_id)
+    copies = Counter(cds_upper)
+    n_copies = np.array([copies[c] if c else 0 for c in cds_upper],
+                        dtype=np.int16)
+
     features = pd.DataFrame({
         "gene_idx": gene_idx,
+        **signals,
+        "cai": cai,
+        "n_copies": n_copies,
+        "is_ribosomal_protein": ribosomal,
+        "is_hypothetical": hypothetical,
         "replicon_type": replicon_type,
         "replicon_length": out["replicon_length"],
         "replicon_circular": circular,
@@ -348,6 +507,8 @@ def process_genome(task):
         "ori": main["ori"] if main else None,
         "ter": main["ter"] if main else None,
         "arm_balance": main["balance"] if main else None,
+        "transl_table": table_id,
+        "cai_reference_genes": int(ribosomal.sum()),
         "lineage": "; ".join(lineage),
         **lineage_ranks(lineage),
     }
@@ -471,8 +632,86 @@ def lookup_run_idx(obs, runs):
     return table[obs["run_accession"].cat.codes.to_numpy()]
 
 
+def fold_of(groups, k, seed):
+    """Spread groups over ``k`` folds, every member of a group in one fold."""
+    perm = np.random.default_rng(seed).permutation(int(groups.max()) + 1)
+    return (perm[groups] % k).astype(np.int8)
+
+
+def gene_families(ortho_group, protein_group):
+    """Connected components of the genes linked by orthology or protein id."""
+    n = len(ortho_group)
+    o = np.asarray(ortho_group, dtype=np.int64)
+    p = np.asarray(protein_group, dtype=np.int64)
+    n_o = int(o.max()) + 1
+    size = n + n_o + int(p.max()) + 1
+    rows = np.r_[np.arange(n), np.arange(n)]
+    cols = np.r_[n + o, n + n_o + p]
+    graph = coo_matrix((np.ones(2 * n, dtype=np.int8), (rows, cols)),
+                       shape=(size, size))
+    _, labels = connected_components(graph, directed=False)
+    return pd.factorize(labels[:n])[0].astype(np.int32)
+
+
+def pair_fold(gene_idx, run_idx, k):
+    """Deterministic fold of each (gene, run) pair, from a mixed hash."""
+    h = (gene_idx.astype(np.uint64) * np.uint64(2654435761)
+         + run_idx.astype(np.uint64) * np.uint64(40503))
+    h ^= h >> np.uint64(15)
+    h *= np.uint64(2246822519)
+    h ^= h >> np.uint64(13)
+    return (h % np.uint64(k)).astype(np.int8)
+
+
+def run_qc(gene_idx, run_idx, count, log_expr, n_genes, n_runs):
+    """Quality of each run, and the mean log expression of each gene.
+
+    ``qc_corr`` correlates the run's log expression with the mean log
+    expression of the same genes over all training runs.
+    """
+    n = np.bincount(run_idx, minlength=n_runs).astype(np.float64)
+    zeros = np.bincount(run_idx, weights=(count == 0), minlength=n_runs)
+    total = np.bincount(run_idx, weights=count, minlength=n_runs)
+    top = np.zeros(n_runs, dtype=np.int64)
+    np.maximum.at(top, run_idx, count)
+    gene_n = np.bincount(gene_idx, minlength=n_genes)
+    gene_mean = (np.bincount(gene_idx, weights=log_expr, minlength=n_genes)
+                 / np.maximum(gene_n, 1))
+    m = gene_mean[gene_idx]
+    x = log_expr.astype(np.float64)
+    sums = {name: np.bincount(run_idx, weights=w, minlength=n_runs)
+            for name, w in (("x", x), ("m", m))}
+    sxx = np.bincount(run_idx, weights=x * x, minlength=n_runs)
+    smm = np.bincount(run_idx, weights=m * m, minlength=n_runs)
+    sxm = np.bincount(run_idx, weights=x * m, minlength=n_runs)
+    del m, x
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mx, mm = sums["x"] / n, sums["m"] / n
+        cov = sxm / n - mx * mm
+        corr = cov / np.sqrt((sxx / n - mx ** 2) * (smm / n - mm ** 2))
+        seen = n > 0
+        qc = pd.DataFrame({
+            "qc_n_genes": np.where(seen, n, np.nan).astype(np.float32),
+            "qc_zero_frac": np.where(seen, zeros / n, np.nan)
+            .astype(np.float32),
+            "qc_top_frac": np.where(seen, top / total, np.nan)
+            .astype(np.float32),
+            "qc_corr": np.where(seen, corr, np.nan).astype(np.float32),
+        })
+    qc["qc_outlier"] = pd.array(
+        np.where(seen, (qc["qc_corr"] < QC_MIN_CORR)
+                 | (qc["qc_zero_frac"] > QC_MAX_ZERO), pd.NA),
+        dtype="boolean")
+    gene_mean = np.where(gene_n > 0, gene_mean, np.nan)
+    return qc, gene_mean
+
+
 def build_obs(src, out, split, genes, runs, llr, lsf):
-    """Write obs_<split>.parquet and check it against the source rows."""
+    """Write obs_<split>.parquet and check it against the source rows.
+
+    For the train split, also returns the run quality table and the mean log
+    expression of each gene (used by the report only, never stored).
+    """
     path = src / f"{split}.parquet"
     obs = pq.read_table(path, columns=["genome_id", "feature_id",
                                        "run_accession", "readcount"]
@@ -500,13 +739,20 @@ def build_obs(src, out, split, genes, runs, llr, lsf):
 
     offset = (llr[gene_idx] + lsf[run_idx]).astype(np.float32)
     log_expr = (np.log(count + 0.5) - offset).astype(np.float32)
+    folds = pair_fold(gene_idx, run_idx, N_FOLDS)
+    check["pair_fold_sizes"] = np.bincount(folds, minlength=N_FOLDS).tolist()
     table = pa.table({"gene_idx": gene_idx, "run_idx": run_idx,
                       "readcount": count, "offset": offset,
-                      "log_expr": log_expr})
+                      "log_expr": log_expr, "pair_fold": folds})
     pq.write_table(table, out / f"obs_{split}.parquet", compression="zstd",
                    row_group_size=4_000_000)
+    del table, folds, offset
     log(f"obs_{split}: {check}")
-    return check
+    if split != "train":
+        return check, None, None
+    qc, gene_mean = run_qc(gene_idx, run_idx, count, log_expr, len(genes),
+                           len(runs))
+    return check, qc, gene_mean
 
 
 # --------------------------------------------------------------------------
@@ -622,23 +868,36 @@ def main():
         feats[col] = feats[col].map({1.0: True, 0.0: False}).astype("boolean")
     for col in ("replicon_type", "feature_type", "start_codon", "stop_codon"):
         feats[col] = feats[col].astype("category")
+    clean["gene_family"] = gene_families(clean["ortho_group"],
+                                         clean["protein_group"])
+    clean["gene_fold"] = fold_of(clean["gene_family"].to_numpy(), N_FOLDS,
+                                 seed=0)
     gene_table = pd.concat([clean, feats], axis=1)
     gene_table.to_parquet(out / "genes.parquet", index=False)
     log(f"genes.parquet: {gene_table.shape}")
 
-    # 4. Run table
+    # 4. Run table, folds by experiment so that replicates stay together
     run_table, levels = clean_runs(runs, genome_idx)
-    run_table.to_parquet(out / "runs.parquet", index=False)
-    log(f"runs.parquet: {run_table.shape}, levels {levels}")
+    exp = run_table["exp_idx"].to_numpy()
+    run_group = pd.factorize(np.where(
+        exp >= 0, exp, exp.max() + 1 + run_table["run_idx"].to_numpy()))[0]
+    run_table["run_fold"] = fold_of(run_group, N_FOLDS, seed=1)
 
-    # 5. Observations
+    # 5. Observations, then the run quality measured on the train counts
     llr = genes["log_length_ratio"].to_numpy()
     lsf = runs["log_size_factor"].to_numpy()
-    obs_checks = {}
+    obs_checks, qc, gene_mean = {}, None, None
     for split in SPLITS:
         if (src / f"{split}.parquet").exists():
-            obs_checks[split] = build_obs(src, out, split, genes, run_table,
-                                          llr, lsf)
+            check, split_qc, split_mean = build_obs(
+                src, out, split, genes, run_table, llr, lsf)
+            obs_checks[split] = check
+            if split_qc is not None:
+                qc, gene_mean = split_qc, split_mean
+    if qc is not None:
+        run_table = pd.concat([run_table, qc], axis=1)
+    run_table.to_parquet(out / "runs.parquet", index=False)
+    log(f"runs.parquet: {run_table.shape}, levels {levels}")
 
     # 6. Report
     checked = gene_table["translation_checked"]
@@ -665,8 +924,35 @@ def main():
         "operon_size": gene_table.drop_duplicates("operon_id")["operon_size"]
         .describe().round(2).to_dict(),
         "condition_levels_raw_clean": levels,
+        "gene_families": int(gene_table["gene_family"].max() + 1),
+        "largest_family": int(np.bincount(gene_table["gene_family"]).max()),
+        "gene_fold_sizes": np.bincount(gene_table["gene_fold"],
+                                       minlength=N_FOLDS).tolist(),
+        "run_fold_sizes": np.bincount(run_table["run_fold"],
+                                      minlength=N_FOLDS).tolist(),
+        "cai_reference_genes": gtab["cai_reference_genes"].describe()
+        .round(1).to_dict(),
+        "n_copies_above_1": int((gene_table["n_copies"] > 1).sum()),
         "obs": obs_checks,
     }
+    if qc is not None:
+        report["qc_corr_quantiles"] = run_table["qc_corr"].astype(float)\
+            .quantile([0.01, 0.05, 0.25, 0.5]).round(3).to_dict()
+        report["qc_zero_frac_quantiles"] = run_table["qc_zero_frac"]\
+            .astype(float).quantile([0.5, 0.95, 0.99]).round(3).to_dict()
+        report["qc_outliers"] = int(run_table["qc_outlier"].sum())
+        # Spearman correlation of each gene signal with the gene's mean log
+        # expression over the training runs (a sanity check, not stored)
+        target = pd.Series(gene_mean)
+        report["spearman_with_mean_expression"] = {
+            col: round(float(gene_table[col].astype(float).corr(
+                target, method="spearman")), 3)
+            for col in ("cai", "gc3", "sd_score", "sigma70_score",
+                        "operon_rank", "ori_position", "n_copies", "length")}
+        rib = gene_table["is_ribosomal_protein"].to_numpy()
+        report["mean_expression_ribosomal_vs_other"] = [
+            round(float(np.nanmean(gene_mean[rib])), 3),
+            round(float(np.nanmean(gene_mean[~rib])), 3)]
     ecoli = gtab[gtab["genome_id"] == "GCF_000005845.2"]
     if len(ecoli):
         report["ecoli_k12_ori_ter"] = [int(ecoli["ori"].iloc[0]),

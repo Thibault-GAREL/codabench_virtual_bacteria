@@ -1,0 +1,11 @@
+[15:04:35] === glm-nb_run-01 ===
+[15:04:35] projet   : D:\Loisir\Code_python\codabench_virtual_bacteria
+[15:04:36] python   : 3.12.1 | torch 2.5.1+cu121, cuda sur NVIDIA GeForce GTX 1660 Ti with Max-Q Design (6.0 Go)
+[15:04:36] git      : 4f40850 (main, modifie)
+[15:04:36] logs     : D:\Loisir\Code_python\codabench_virtual_bacteria\outputs\logs\glm-nb_run-01\run.log
+[15:04:43] mlflow   : D:\Loisir\Code_python\codabench_virtual_bacteria\mlruns (experience codabench_virtual_bacteria)
+[15:04:43] config   : submission=submissions\glm_nb\submission.py, mode=debug, steps=60, refit_steps=20
+[15:04:43]            detail complet dans config.json
+[15:04:43] --- donnees ---
+[15:04:43] train 385,006 lignes | A 18,046, B 8,436, C 1,666, D 34 | 0s, RAM 0.7 Go
+[15:04:43] ECHEC : TypeError: <class 'submission.Solver'> is a built-in class

@@ -1,0 +1,9 @@
+artifact_location: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401
+creation_time: 1793801082280
+effective_trace_archival_retention: null
+experiment_id: '203223887104308401'
+last_update_time: 1793801082280
+lifecycle_stage: active
+name: codabench_virtual_bacteria
+trace_location: null
+workspace: default

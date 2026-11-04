@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/ad502cb24ad24799bbd56b7006647a0e/artifacts
+end_time: 1793810137082
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: ad502cb24ad24799bbd56b7006647a0e
+run_name: glm-nb_run-12
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1793809903298
+status: 3
+tags: []
+user_id: garel

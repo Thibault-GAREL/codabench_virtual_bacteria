@@ -1,0 +1,12 @@
+[15:13:14] === glm-nb_run-05 ===
+[15:13:14] projet   : D:\Loisir\Code_python\codabench_virtual_bacteria
+[15:13:15] python   : 3.12.1 | torch 2.5.1+cu121, cuda sur NVIDIA GeForce GTX 1660 Ti with Max-Q Design (6.0 Go)
+[15:13:15] git      : 4f40850 (main, modifie)
+[15:13:15] logs     : D:\Loisir\Code_python\codabench_virtual_bacteria\outputs\logs\glm-nb_run-05\run.log
+[15:13:17] mlflow   : D:\Loisir\Code_python\codabench_virtual_bacteria\mlruns (experience codabench_virtual_bacteria)
+[15:13:17] config   : submission=submissions\glm_nb\submission.py, mode=train
+[15:13:17]            detail complet dans config.json
+[15:13:17] --- donnees ---
+[15:13:29] train 69,202,809 lignes | A 3,260,298, B 803,581, C 311,029, D 3,741 | 12s, RAM 7.5 Go
+[15:13:29] --- entrainement ---
+[15:13:39] ECHEC : MemoryError: Unable to allocate 528. MiB for an array with shape (69202809,) and data type int64

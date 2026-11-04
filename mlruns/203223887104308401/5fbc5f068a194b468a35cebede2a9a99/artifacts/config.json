@@ -1,0 +1,7 @@
+{
+  "submission": "submissions\\glm_nb\\submission.py",
+  "mode": "debug",
+  "float32": true,
+  "steps": 60,
+  "refit_steps": 20
+}
