@@ -1,0 +1,7 @@
+{
+  "submission": "submissions\\hybrid_esm\\submission.py",
+  "mode": "debug",
+  "float32": true,
+  "steps": 60,
+  "refit_steps": 20
+}

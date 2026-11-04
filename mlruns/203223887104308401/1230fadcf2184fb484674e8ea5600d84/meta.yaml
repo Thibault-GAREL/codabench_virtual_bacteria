@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/1230fadcf2184fb484674e8ea5600d84/artifacts
+end_time: 1793834132741
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: 1230fadcf2184fb484674e8ea5600d84
+run_name: hybrid-esm_run-01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1793833599846
+status: 3
+tags: []
+user_id: root
