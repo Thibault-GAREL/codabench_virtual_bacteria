@@ -191,7 +191,11 @@ class _Index:
             sheet = runs[fields].notna().any(axis=1).to_numpy()
         key = runs["genome_id"].astype(str)
         for column in fields:
-            key = key + "|" + runs[column].astype(str)
+            # not astype(str): pandas 3 keeps a missing value missing, and a
+            # single empty field would then blank the whole key (26 conditions
+            # left instead of 3,664)
+            key = key + "|" + runs[column].map(
+                lambda v: "nan" if pd.isna(v) else str(v))
         self.has_sheet = sheet
         self.cond_of_run = pd.factorize(key.where(sheet))[0].astype(np.int32)
         self.n_cond = max(int(self.cond_of_run.max()) + 1, 1)
