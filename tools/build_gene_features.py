@@ -81,6 +81,10 @@ def main():
                         help="prefix of the files written by esm_embeddings")
     parser.add_argument("--pca", type=int, default=128,
                         help="PCA dimensions of the ESM file to read")
+    parser.add_argument("--dims", type=int, default=None,
+                        help="keep the first DIMS PCA components only (the "
+                        "components are nested, so this is the PCA at DIMS "
+                        "dimensions), to shrink the file")
     parser.add_argument("--out", type=Path, default=None,
                         help="folder of gene_features.npz (default: the "
                         "clean data folder)")
@@ -94,6 +98,8 @@ def main():
     assert np.array_equal(mapping["gene_idx"].to_numpy(),
                           genes["gene_idx"].to_numpy())
     esm = np.load(root / f"{args.esm}_pca{args.pca}.npy").astype(np.float32)
+    if args.dims:
+        esm = esm[:, :args.dims]
     esm /= np.sqrt((esm ** 2).mean(axis=0).mean())
 
     out = (args.out or root) / "gene_features.npz"
