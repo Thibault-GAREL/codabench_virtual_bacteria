@@ -197,6 +197,63 @@ class _Towers(nn.Module):
         return g, r
 
 
+class _Table(nn.Module):
+    """One GLM effect: a free value per level, read with index_select.
+
+    index_select rather than weight[idx]: on rows sorted by genome and run,
+    the backward of weight[idx] is 26 times slower.
+    """
+
+    def __init__(self, values):
+        super().__init__()
+        self.weight = nn.Parameter(torch.as_tensor(np.asarray(values),
+                                                   dtype=torch.float32))
+
+    def forward(self, idx=None):
+        if idx is None:
+            return self.weight
+        return torch.index_select(self.weight, 0, idx)
+
+
+class _Net(nn.Module):
+    """The whole model as modules: the GLM effect tables and the two towers.
+
+    Training computes the towers once per step for every gene and run, then
+    calls ``rows`` chunk by chunk. ``forward`` chains both for a few rows with
+    every level kept, as at prediction time (the visualiser measures it).
+    """
+
+    def __init__(self, init, towers):
+        super().__init__()
+        self.glm = nn.ModuleDict({k: _Table(v) for k, v in init.items()
+                                  if not k.startswith("tower")})
+        self.towers = towers
+
+    def rows(self, gt, rt, g, r, G, p, c, gp, gc, off, mg, mc, mr, scale):
+        """log mu and log sigma of a chunk of rows, tower outputs gathered."""
+        t = self.glm
+        eta = (off + t["b0"]() + t["a_genome"](G)
+               + t["a_gene"](g) * mg
+               + t["b_project"](p)
+               + t["b_condition"](c) * mc
+               + t["b_run"](r) * mr
+               + t["c_gp"](gp) * mg
+               + t["c_gc"](gc) * mg * mc
+               + gt[:, 0] + rt[:, 0]
+               + (gt[:, 2:] * rt[:, 1:]).sum(1) * scale)
+        log_r = (t["rho0"]() + t["rho_genome"](G)
+                 + t["rho_gene"](g) * mg + gt[:, 1])
+        return eta, log_r
+
+    def forward(self, x_gene, genome_of_gene, x_run, genome_of_run,
+                g, r, G, p, c, gp, gc, off):
+        tg, tr = self.towers(x_gene, genome_of_gene, x_run, genome_of_run)
+        keep = torch.ones_like(off)
+        return self.rows(_take(tg, g), _take(tr, r), g, r, G, p, c, gp, gc,
+                         off, keep, keep, keep,
+                         1.0 / np.sqrt(self.towers.dim))
+
+
 def _print_log(message):
     print(f"{time.strftime('%H:%M:%S')} [glm] {message}", flush=True)
 
@@ -390,6 +447,8 @@ class HybridModel:
         self.log = _print_log
         self.metric = _no_metric
         self.track = lambda iterable, desc="train", total=None: iterable
+        # factory(module) -> LayerStats, set by the harness to log layer/...
+        self.layer_stats = None
         self.params = None
 
     # --- data ---------------------------------------------------------
@@ -456,8 +515,12 @@ class HybridModel:
                 "rho0": np.array([np.log(5.0)]),
                 "rho_genome": zero(ix.n_genome), "rho_gene": zero(ix.n_gene)}
 
-    def _train(self, data, rows, init, steps, stage):
-        """Adam on the mean NB NLL of ``rows`` plus the L2 penalties."""
+    def _train(self, data, rows, init, steps, stage, offset=0):
+        """Adam on the mean NB NLL of ``rows`` plus the L2 penalties.
+
+        ``offset`` numbers the steps after those of an earlier stage, so the
+        fit and the refit follow each other on one axis in MLflow.
+        """
         dev, ix = self.device, self.ix
         sel = np.flatnonzero(rows)
         n = len(sel)
@@ -485,10 +548,13 @@ class HybridModel:
         cond_of_run = torch.as_tensor(np.where(
             ix.cond_of_run >= 0, ix.cond_of_run, ix.n_cond)).to(dev).long()
 
-        P = {k: torch.tensor(v, dtype=torch.float32, device=dev,
-                             requires_grad=True) for k, v in init.items()
-             if not k.startswith("tower")}
-        towers = self.towers.to(dev)
+        net = _Net(init, self.towers).to(dev)
+        P = {k: m.weight for k, m in net.glm.items()}
+        towers = net.towers
+        # per-layer measures, only when the local harness plugs LayerStats in
+        stats = self.layer_stats(net) if self.layer_stats else None
+        if stats is not None:
+            self.log(stats.describe())
         x_gene = torch.as_tensor(self.x_gene).to(dev)
         x_run = torch.as_tensor(self.x_run).to(dev)
         genome_of_run = torch.as_tensor(np.maximum(ix.genome_of_run, 0)).to(
@@ -507,6 +573,8 @@ class HybridModel:
             for group in opt.param_groups:
                 group["lr"] = group["base"] * decay
             opt.zero_grad(set_to_none=True)
+            if stats is not None:
+                stats.start(step + offset)
 
             # Level dropout: these genes, conditions and runs lose their own
             # GLM effects for this step, the towers have to stand in
@@ -530,8 +598,6 @@ class HybridModel:
             t_step = time.time()
             for s in range(0, n, GPU_CHUNK):
                 e = s + GPU_CHUNK
-                # index_select, not P[k][idx]: on rows sorted by genome and
-                # run, the backward of P[k][idx] is 26 times slower
                 g = t["gene"][s:e].long()
                 r = t["run"][s:e].long()
                 G = genome_of_gene[g]
@@ -539,17 +605,10 @@ class HybridModel:
                 mg, mc, mr = _take(keep_g, g), _take(keep_c, c), \
                     _take(keep_r, r)
                 gt, rt = _take(tg_leaf, g), _take(tr_leaf, r)
-                eta = (t["off"][s:e] + P["b0"] + _take(P["a_genome"], G)
-                       + _take(P["a_gene"], g) * mg
-                       + _take(P["b_project"], prj_of_run[r])
-                       + _take(P["b_condition"], c) * mc
-                       + _take(P["b_run"], r) * mr
-                       + _take(P["c_gp"], t["gp"][s:e].long()) * mg
-                       + _take(P["c_gc"], t["gc"][s:e].long()) * mg * mc
-                       + gt[:, 0] + rt[:, 0]
-                       + (gt[:, 2:] * rt[:, 1:]).sum(1) * scale)
-                log_r = (P["rho0"] + _take(P["rho_genome"], G)
-                         + _take(P["rho_gene"], g) * mg + gt[:, 1])
+                eta, log_r = net.rows(
+                    gt, rt, g, r, G, prj_of_run[r], c,
+                    t["gp"][s:e].long(), t["gc"][s:e].long(),
+                    t["off"][s:e], mg, mc, mr, scale)
                 nll = _nb_nll_torch(t["y"][s:e], eta, log_r)
                 if "w" in t:
                     nll = nll * t["w"][s:e]
@@ -560,18 +619,22 @@ class HybridModel:
             penalty = sum((P[k] ** 2).sum() / (2 * sd ** 2)
                           for k, sd in PRIOR_SD.items()) / n
             penalty.backward()
+            if stats is not None:
+                stats.before_optimizer()
             opt.step()
             with torch.no_grad():
                 for k in DUMMY:
                     P[k][-1] = 0.0
+            layer = stats.collect() if stats is not None else {}
             if step == 0:
                 gpu = (f", GPU reserved {torch.cuda.memory_reserved() / 1e9:.2f}"
                        " GB" if dev != "cpu" else "")
                 self.log(f"{stage}: first step {time.time() - t_step:.1f}s"
                          f"{gpu}, {_ram()}")
-            if step % 10 == 0 or step == steps - 1:
-                self.metric(step=step, **{f"{stage}/nll": total + const,
-                                          f"{stage}/lr": self.lr * decay})
+            if step % 10 == 0 or step == steps - 1 or layer:
+                self.metric(step=step + offset,
+                            **{f"{stage}/nll": total + const,
+                               f"{stage}/lr": self.lr * decay}, **layer)
         out = {k: v.detach().cpu().numpy().astype(np.float64)
                for k, v in P.items()}
         with torch.no_grad():
@@ -580,7 +643,9 @@ class HybridModel:
             towers.train()
         out["tower_g"] = tg.cpu().numpy().astype(np.float32)
         out["tower_r"] = tr.cpu().numpy().astype(np.float32)
-        del t, P, opt, x_gene, x_run, tg, tr
+        if stats is not None:
+            stats.remove()
+        del t, P, opt, x_gene, x_run, tg, tr, net
         if dev != "cpu":
             torch.cuda.empty_cache()
         return out, support
@@ -630,7 +695,12 @@ class HybridModel:
 
     # --- fit / predict ------------------------------------------------
 
-    def fit(self, train_df, samples_df, genomes_dir):
+    def prepare(self, train_df, samples_df):
+        """Index, pairs, tower inputs and towers, before any training.
+
+        Returns the gene id, run id, count and offset of each training row.
+        Also used by visualisation/build_arch.py to build the real model.
+        """
         t0 = time.time()
         self.ix = ix = _Index(self.genes, samples_df)
         target = "readcount" if "readcount" in train_df else "counts"
@@ -663,6 +733,12 @@ class HybridModel:
                  f"parameters")
         self.family = _gene_families(self.genes)
         self.n_family = int(self.family.max()) + 1
+        return gene, run, y, off
+
+    def fit(self, train_df, samples_df, genomes_dir):
+        t0 = time.time()
+        gene, run, y, off = self.prepare(train_df, samples_df)
+        ix = self.ix
 
         # 1. Internal holdouts built like the regions C, B and A
         hold_gene = _hit(self.family, 20, seed=0)[gene]
@@ -703,7 +779,8 @@ class HybridModel:
         all_rows = np.ones(len(y), dtype=bool)
         data["w"] = self._run_weights(gene, run, y, off, all_rows)
         self.params, self.seen = self._train(data, all_rows, P,
-                                             self.refit_steps, "refit")
+                                             self.refit_steps, "refit",
+                                             offset=self.steps)
         self.metric(**self.holdout)
         self.log(f"fit total {time.time() - t0:.0f}s")
         return self

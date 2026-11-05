@@ -1,0 +1,83 @@
+[11:58:53] === hybrid-esm_run-04 ===
+[11:58:53] projet   : D:\Loisir\Code_python\codabench_virtual_bacteria
+[11:58:53] python   : 3.12.1 | torch 2.5.1+cu121, cuda sur NVIDIA GeForce GTX 1660 Ti with Max-Q Design (6.0 Go)
+[11:58:54] git      : 950f5d2 (main, modifie)
+[11:58:54] logs     : D:\Loisir\Code_python\codabench_virtual_bacteria\outputs\logs\hybrid-esm_run-04\run.log
+[11:58:55] mlflow   : D:\Loisir\Code_python\codabench_virtual_bacteria\mlruns (experience codabench_virtual_bacteria)
+[11:58:55] config   : submission=submissions\hybrid_esm\submission.py, mode=debug, float32=True, layer_stats_interval=10
+[11:58:55]            detail complet dans config.json
+[11:58:55] --- donnees ---
+[11:58:56] train 385,006 lignes | A 18,046, B 8,436, C 1,666, D 34 | 0s, RAM 0.7 Go
+[11:58:56] --- entrainement ---
+[11:58:56] 385,006 rows, 4,256 genes, 3,001 runs, 176 projects, 504 conditions, 205,508 gene x project, 187,347 gene x condition (0s)
+[11:58:56] gene features gene_features.npz: 4,256 of 4,256 genes, 39 signals, ESM 32 dimensions, 4,256 with a protein
+[11:58:56] towers: gene 73 inputs, run 131 inputs, 80,459 parameters
+[11:58:56] holdout rows: 19,214 gene, 24,370 run, 6,665 gene x condition, 6,708 pair, RAM 0.7 GB
+[11:58:56] fit: 329,249 rows, RAM 0.7 GB
+[11:58:56] layers   : 17 unites, 20 hooks, tous les 10 steps (layer/... dans MLflow)
+[11:58:58] fit: data on cuda, 0.02 GB, RAM 0.9 GB
+[11:59:00] fit: first step 1.3s, GPU reserved 0.42 GB, RAM 1.4 GB
+[11:59:00]   fit   0%|          | 1/200 ETA 04:53   fit/nll 13.9171  fit/lr 0.0500
+[11:59:00]   fit   5%|          | 10/200 ETA 00:35   fit/nll 13.9171  fit/lr 0.0500
+[11:59:01]   fit  10%|#         | 20/200 ETA 00:21   fit/nll 7.3878  fit/lr 0.0497
+[11:59:01]   fit  15%|##        | 30/200 ETA 00:16   fit/nll 7.0441  fit/lr 0.0489
+[11:59:02]   fit  20%|##        | 40/200 ETA 00:13   fit/nll 6.9386  fit/lr 0.0475
+[11:59:02]   fit  25%|##        | 50/200 ETA 00:11   fit/nll 6.7687  fit/lr 0.0457
+[11:59:03]   fit  30%|###       | 60/200 ETA 00:10   fit/nll 6.7199  fit/lr 0.0434
+[11:59:03]   fit  35%|####      | 70/200 ETA 00:09   fit/nll 6.6710  fit/lr 0.0407
+[11:59:04]   fit  40%|####      | 80/200 ETA 00:08   fit/nll 6.6320  fit/lr 0.0377
+[11:59:04]   fit  45%|####      | 90/200 ETA 00:07   fit/nll 6.6105  fit/lr 0.0345
+[11:59:05]   fit  50%|#####     | 100/200 ETA 00:06   fit/nll 6.5675  fit/lr 0.0310
+[11:59:05]   fit  55%|######    | 110/200 ETA 00:05   fit/nll 6.5460  fit/lr 0.0275
+[11:59:06]   fit  60%|######    | 120/200 ETA 00:05   fit/nll 6.5441  fit/lr 0.0240
+[11:59:07]   fit  65%|######    | 130/200 ETA 00:04   fit/nll 6.5363  fit/lr 0.0205
+[11:59:07]   fit  70%|#######   | 140/200 ETA 00:03   fit/nll 6.5363  fit/lr 0.0173
+[11:59:08]   fit  75%|########  | 150/200 ETA 00:03   fit/nll 6.5206  fit/lr 0.0143
+[11:59:08]   fit  80%|########  | 160/200 ETA 00:02   fit/nll 6.5206  fit/lr 0.0116
+[11:59:09]   fit  85%|########  | 170/200 ETA 00:01   fit/nll 6.5148  fit/lr 0.0093
+[11:59:10]   fit  90%|######### | 180/200 ETA 00:01   fit/nll 6.5050  fit/lr 0.0075
+[11:59:10]   fit  95%|##########| 190/200 ETA 00:00   fit/nll 6.5109  fit/lr 0.0061
+[11:59:11]   fit 100%|##########| 200/200 ETA 00:00   fit/nll 6.5109  fit/lr 0.0050
+[11:59:11]   fit termine, 200 iterations en 00:12
+[11:59:11] fit done (15s)
+[11:59:11] holdout rows: A_full 3,629, A_block 9,744, B_condition 6,794, B_project 8,012, B_new 8,364, C 18,014, D 1,200
+[11:59:11] holdout NB-NLL: A_full 6.511, A_block 6.962, B_condition 7.361, B_project 7.008, B_new 8.278, C 7.377
+[11:59:11] dispersion shifts: A_full -0.29, A_block -0.71, B_condition -0.86, B_project +0.16, B_new -1.55, C -0.65, D -0.65
+[11:59:11] refit: 385,006 rows, RAM 1.4 GB
+[11:59:11] layers   : 17 unites, 20 hooks, tous les 10 steps (layer/... dans MLflow)
+[11:59:11] refit: data on cuda, 0.04 GB, RAM 1.4 GB
+[11:59:11] refit: first step 0.1s, GPU reserved 0.56 GB, RAM 1.4 GB
+[11:59:11]   refit   1%|          | 1/80 ETA 00:16   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.7787  refit/lr 0.0500
+[11:59:12]   refit   6%|#         | 5/80 ETA 00:06   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.7787  refit/lr 0.0500
+[11:59:12]   refit  11%|#         | 9/80 ETA 00:05   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.7787  refit/lr 0.0500
+[11:59:12]   refit  16%|##        | 13/80 ETA 00:05   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.6635  refit/lr 0.0483
+[11:59:12]   refit  21%|##        | 17/80 ETA 00:04   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.6635  refit/lr 0.0483
+[11:59:13]   refit  26%|###       | 21/80 ETA 00:04   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.5795  refit/lr 0.0434
+[11:59:13]   refit  31%|###       | 25/80 ETA 00:04   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.5795  refit/lr 0.0434
+[11:59:13]   refit  36%|####      | 29/80 ETA 00:03   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.5795  refit/lr 0.0434
+[11:59:13]   refit  41%|####      | 33/80 ETA 00:03   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.5248  refit/lr 0.0361
+[11:59:14]   refit  46%|#####     | 37/80 ETA 00:02   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.5248  refit/lr 0.0361
+[11:59:14]   refit  51%|#####     | 41/80 ETA 00:02   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4916  refit/lr 0.0275
+[11:59:14]   refit  56%|######    | 45/80 ETA 00:02   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4916  refit/lr 0.0275
+[11:59:14]   refit  61%|######    | 49/80 ETA 00:02   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4916  refit/lr 0.0275
+[11:59:15]   refit  66%|#######   | 53/80 ETA 00:01   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4896  refit/lr 0.0189
+[11:59:15]   refit  71%|#######   | 57/80 ETA 00:01   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4896  refit/lr 0.0189
+[11:59:15]   refit  76%|########  | 61/80 ETA 00:01   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4975  refit/lr 0.0116
+[11:59:16]   refit  81%|########  | 65/80 ETA 00:01   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4975  refit/lr 0.0116
+[11:59:16]   refit  86%|######### | 69/80 ETA 00:00   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4975  refit/lr 0.0116
+[11:59:16]   refit  91%|######### | 73/80 ETA 00:00   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4877  refit/lr 0.0067
+[11:59:17]   refit  96%|##########| 77/80 ETA 00:00   fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4877  refit/lr 0.0067
+[11:59:17]   refit termine, 80 iterations en 00:05
+[11:59:17] fit total 21s
+[11:59:17] fit 21s, RAM 1.4 Go
+[11:59:17] --- evaluation ---
+[11:59:17] region   NB-NLL     MAE      R2   lignes
+[11:59:17] A          7.325   0.963   0.611   18046
+[11:59:17] B          8.079   0.843   0.708   8436
+[11:59:17] C          7.236   1.637   0.172   1666
+[11:59:17] D          7.997   1.282   0.339   34
+[11:59:17] challenge  7.547   1.148   0.497   
+[11:59:17] fit 21s, predict 0s, GPU pic 0.41 Go
+[11:59:17] --- termine en 00:23 ---
+[11:59:17] final    : fit/nll 6.5109  fit/lr 0.0050  refit/nll 6.4877  refit/lr 0.0050  holdout/nb_nll_A_full 6.5113  holdout/nb_nll_A_block 6.9619  holdout/nb_nll_B_condition 7.3607  holdout/nb_nll_B_project 7.0076  holdout/nb_nll_B_new 8.2778  holdout/nb_nll_C 7.3766  holdout/delta_A_full -0.2864  holdout/delta_A_block -0.7139  holdout/delta_B_condition -0.8647  holdout/delta_B_project 0.1636  holdout/delta_B_new -1.5463  holdout/delta_C -0.6489  holdout/delta_D -0.6489  eval/nb_nll_A 7.3252  eval/mae_A 0.9633  eval/r2_A 0.6108  eval/nb_nll_B 8.0793  eval/mae_B 0.8428  eval/r2_B 0.7080  eval/nb_nll_C 7.2365  eval/mae_C 1.6371  eval/r2_C 0.1720  eval/nb_nll_D 7.9966  eval/mae_D 1.2818  eval/r2_D 0.3387  eval/nb_nll_challenge 7.5470  eval/mae_challenge 1.1477  eval/r2_challenge 0.4969  time/fit_s 21.0402  time/predict_s 0.1212  memory/gpu_peak_gb 0.4094
+[11:59:17] courbes  : mlflow ui (depuis D:\Loisir\Code_python\codabench_virtual_bacteria)

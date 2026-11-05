@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from benchmark_utils.nb_loss import (check_predictions, log_mae,  # noqa: E402
                                      log_r2, nb_nll)
+from layer_stats import LayerStats  # noqa: E402
 from run_logger import RunLogger  # noqa: E402
 
 REGIONS = ["A", "B", "C", "D"]
@@ -85,6 +86,9 @@ def main():
                         help="solver parameter, name=value (repeatable)")
     parser.add_argument("--name", default=None,
                         help="model name in the logs (default: the folder)")
+    parser.add_argument("--layer-every", type=int, default=10,
+                        help="log layer/... measures every N steps for the "
+                        "visualiser (0 to turn off), if the model supports it")
     parser.add_argument("--float32", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="cast the float columns of train_df to float32 "
@@ -105,7 +109,8 @@ def main():
 
     with RunLogger(name) as run:
         run.config({"submission": str(submission.relative_to(ROOT)),
-                    "mode": args.mode, "float32": args.float32, **params})
+                    "mode": args.mode, "float32": args.float32,
+                    "layer_stats_interval": args.layer_every, **params})
 
         run.section("donnees")
         t = time.time()
@@ -134,6 +139,9 @@ def main():
                              genomes_dir=genomes_dir, **data)
         model = solver.model
         model.log, model.metric, model.track = run.log, run.metric, run.track
+        if hasattr(model, "layer_stats") and args.layer_every > 0:
+            model.layer_stats = (lambda module: LayerStats(
+                module, every=args.layer_every))
 
         run.section("entrainement")
         t = time.time()

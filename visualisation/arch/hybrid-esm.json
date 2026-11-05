@@ -1,0 +1,581 @@
+{
+ "name": "hybrid-esm",
+ "title": "Modèle hybride ESM-2",
+ "subtitle": "GLM binomiale négative + tour gène (ESM-2) + tour run, données debug",
+ "source": "submissions/hybrid_esm/submission.py",
+ "generated": "2026-11-05T11:58:33",
+ "torch": "2.5.1+cu121",
+ "symbols": {
+  "B": 37,
+  "G": 4256,
+  "R": 3001
+ },
+ "params_total": 485514,
+ "summary": [
+  [
+   "lignes d'entraînement",
+   "385,006"
+  ],
+  [
+   "gènes",
+   "4,256"
+  ],
+  [
+   "runs",
+   "3,001"
+  ],
+  [
+   "projets",
+   "176"
+  ],
+  [
+   "conditions",
+   "504"
+  ],
+  [
+   "gène × projet",
+   "205,508"
+  ],
+  [
+   "gène × condition",
+   "187,347"
+  ],
+  [
+   "entrées tour gène",
+   "73"
+  ],
+  [
+   "dimension des tours",
+   "32"
+  ]
+ ],
+ "coverage": {
+  "covered": 485514,
+  "total": 485514,
+  "missing": [],
+  "unknown_modules": [],
+  "never_called": []
+ },
+ "links": [
+  {
+   "from": "genome_emb",
+   "to": "genome_emb_run",
+   "label": "partagé",
+   "style": "dashed",
+   "kind": "embed"
+  }
+ ],
+ "root": {
+  "label": "Modèle hybride ESM-2",
+  "kind": "stack",
+  "children": [
+   {
+    "label": "Observation",
+    "kind": "input",
+    "info": [
+     "un gène dans un run",
+     "offset = profondeur + longueur"
+    ],
+    "scale": 3,
+    "id": "mod-le-hybride-esm-2/observation",
+    "out": "[B]"
+   },
+   {
+    "label": "branches",
+    "kind": "group",
+    "children": [
+     {
+      "label": "Tour gène",
+      "kind": "stack",
+      "module": "towers.gene",
+      "info": [
+       "73 + 8 → 256 → 128 → 34"
+      ],
+      "children": [
+       {
+        "label": "Entrées du gène",
+        "kind": "input",
+        "info": [
+         "39 signaux (CAI, opéron, origine...)",
+         "embedding ESM-2 de la protéine (ACP)",
+         "2 indicateurs de présence"
+        ],
+        "id": "mod-le-hybride-esm-2/branches/tour-g-ne/entr-es-du-g-ne",
+        "out": "[G, 73]"
+       },
+       {
+        "label": "Embedding génome",
+        "kind": "embed",
+        "module": "towers.genome",
+        "info": [
+         "8 dimensions"
+        ],
+        "doc": "Partagé entre les deux tours.",
+        "id": "genome_emb",
+        "params": 8,
+        "cls": "Embedding",
+        "calls": 2,
+        "in": "[G]",
+        "out": "[G, 8]"
+       },
+       {
+        "label": "Concat",
+        "kind": "concat",
+        "id": "mod-le-hybride-esm-2/branches/tour-g-ne/concat"
+       },
+       {
+        "label": "Linear 1",
+        "kind": "linear",
+        "module": "towers.gene.0",
+        "info": [
+         "81 → 256"
+        ],
+        "id": "mod-le-hybride-esm-2/branches/tour-g-ne/linear-1",
+        "params": 20992,
+        "cls": "Linear",
+        "calls": 1,
+        "in": "[G, 81]",
+        "out": "[G, 256]"
+       },
+       {
+        "label": "GELU",
+        "kind": "act",
+        "module": "towers.gene.1",
+        "id": "mod-le-hybride-esm-2/branches/tour-g-ne/gelu",
+        "params": 0,
+        "cls": "GELU",
+        "calls": 1,
+        "in": "[G, 256]",
+        "out": "[G, 256]"
+       },
+       {
+        "label": "Linear 2",
+        "kind": "linear",
+        "module": "towers.gene.2",
+        "info": [
+         "256 → 128"
+        ],
+        "id": "mod-le-hybride-esm-2/branches/tour-g-ne/linear-2",
+        "params": 32896,
+        "cls": "Linear",
+        "calls": 1,
+        "in": "[G, 256]",
+        "out": "[G, 128]"
+       },
+       {
+        "label": "GELU",
+        "kind": "act",
+        "module": "towers.gene.3",
+        "id": "mod-le-hybride-esm-2/branches/tour-g-ne/gelu-2",
+        "params": 0,
+        "cls": "GELU",
+        "calls": 1,
+        "in": "[G, 128]",
+        "out": "[G, 128]"
+       },
+       {
+        "label": "Sortie",
+        "kind": "linear",
+        "module": "towers.gene.4",
+        "info": [
+         "128 → 34"
+        ],
+        "id": "mod-le-hybride-esm-2/branches/tour-g-ne/sortie",
+        "params": 4386,
+        "cls": "Linear",
+        "calls": 1,
+        "in": "[G, 128]",
+        "out": "[G, 34]"
+       },
+       {
+        "label": "s_gène, ρ_gène, u_gène",
+        "kind": "output",
+        "info": [
+         "niveau, dispersion",
+         "vecteur de 32"
+        ],
+        "id": "mod-le-hybride-esm-2/branches/tour-g-ne/s-g-ne-g-ne-u-g-ne"
+       }
+      ],
+      "doc": "Prédit ce que le GLM ne sait pas d'un gène jamais vu : son niveau, sa dispersion et son vecteur de réponse aux conditions.",
+      "scale": 2,
+      "id": "mod-le-hybride-esm-2/branches/tour-g-ne",
+      "params": 58274,
+      "cls": "Sequential",
+      "calls": 1,
+      "in": "[G, 81]",
+      "out": "[G, 34]"
+     },
+     {
+      "label": "GLM, chemin résiduel",
+      "kind": "stack",
+      "info": [
+       "une valeur libre par niveau",
+       "pénalité L2, 0 si jamais vu"
+      ],
+      "children": [
+       {
+        "label": "Effets du gène",
+        "kind": "group",
+        "children": [
+         {
+          "label": "Génome",
+          "kind": "embed",
+          "module": "glm.a_genome",
+          "info": [
+           "niveaux"
+          ],
+          "doc": "Niveau propre à chaque génome.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/effets-du-g-ne/g-nome",
+          "params": 1,
+          "cls": "_Table",
+          "calls": 1,
+          "in": "[B]",
+          "out": "[B]"
+         },
+         {
+          "label": "Gène",
+          "kind": "embed",
+          "module": "glm.a_gene",
+          "info": [
+           "4,256 niveaux"
+          ],
+          "doc": "Niveau propre au gène, masqué au hasard pendant l'entraînement (1 famille sur 10) pour que la tour gène apprenne à le deviner.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/effets-du-g-ne/g-ne",
+          "params": 4256,
+          "cls": "_Table",
+          "calls": 1,
+          "in": "[B]",
+          "out": "[B]"
+         }
+        ],
+        "layout": "row",
+        "flow": "none",
+        "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/effets-du-g-ne"
+       },
+       {
+        "label": "Effets du run",
+        "kind": "group",
+        "children": [
+         {
+          "label": "Projet",
+          "kind": "embed",
+          "module": "glm.b_project",
+          "info": [
+           "176 niveaux"
+          ],
+          "doc": "Le laboratoire, ses habitudes.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/effets-du-run/projet",
+          "params": 176,
+          "cls": "_Table",
+          "calls": 1,
+          "in": "[B]",
+          "out": "[B]"
+         },
+         {
+          "label": "Condition",
+          "kind": "embed",
+          "module": "glm.b_condition",
+          "info": [
+           "505 niveaux"
+          ],
+          "doc": "Mêmes conditions curées dans un génome. Masquée pour 1 condition sur 10 pendant l'entraînement.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/effets-du-run/condition",
+          "params": 505,
+          "cls": "_Table",
+          "calls": 1,
+          "in": "[B]",
+          "out": "[B]"
+         },
+         {
+          "label": "Run",
+          "kind": "embed",
+          "module": "glm.b_run",
+          "info": [
+           "3,001 niveaux"
+          ],
+          "doc": "Niveau propre au run.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/effets-du-run/run",
+          "params": 3001,
+          "cls": "_Table",
+          "calls": 1,
+          "in": "[B]",
+          "out": "[B]"
+         }
+        ],
+        "layout": "row",
+        "flow": "none",
+        "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/effets-du-run"
+       },
+       {
+        "label": "Interactions",
+        "kind": "group",
+        "children": [
+         {
+          "label": "Gène × projet",
+          "kind": "embed",
+          "module": "glm.c_gp",
+          "info": [
+           "205,509 paires"
+          ],
+          "doc": "Le niveau du gène dans les runs d'un projet. Une paire vue moins de 2 fois reste à 0.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/interactions/g-ne-projet",
+          "params": 205509,
+          "cls": "_Table",
+          "calls": 1,
+          "in": "[B]",
+          "out": "[B]"
+         },
+         {
+          "label": "Gène × condition",
+          "kind": "embed",
+          "module": "glm.c_gc",
+          "info": [
+           "187,348 paires"
+          ],
+          "doc": "Le niveau du gène dans une condition. Une paire vue moins de 2 fois reste à 0.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/interactions/g-ne-condition",
+          "params": 187348,
+          "cls": "_Table",
+          "calls": 1,
+          "in": "[B]",
+          "out": "[B]"
+         }
+        ],
+        "layout": "row",
+        "flow": "none",
+        "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/interactions"
+       },
+       {
+        "label": "Dispersion",
+        "kind": "group",
+        "children": [
+         {
+          "label": "ρ constante",
+          "kind": "embed",
+          "module": "glm.rho0",
+          "info": [
+           "1 valeur"
+          ],
+          "doc": "Dispersion moyenne, log σ.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/dispersion/constante",
+          "params": 1,
+          "cls": "_Table",
+          "calls": 1,
+          "out": "[1]"
+         },
+         {
+          "label": "ρ génome",
+          "kind": "embed",
+          "module": "glm.rho_genome",
+          "info": [
+           "niveaux"
+          ],
+          "doc": "Dispersion propre au génome.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/dispersion/g-nome",
+          "params": 1,
+          "cls": "_Table",
+          "calls": 1,
+          "in": "[B]",
+          "out": "[B]"
+         },
+         {
+          "label": "ρ gène",
+          "kind": "embed",
+          "module": "glm.rho_gene",
+          "info": [
+           "4,256 niveaux"
+          ],
+          "doc": "Dispersion propre au gène.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/dispersion/g-ne",
+          "params": 4256,
+          "cls": "_Table",
+          "calls": 1,
+          "in": "[B]",
+          "out": "[B]"
+         }
+        ],
+        "layout": "row",
+        "flow": "none",
+        "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/dispersion"
+       },
+       {
+        "label": "Constante",
+        "kind": "group",
+        "children": [
+         {
+          "label": "Constante",
+          "kind": "embed",
+          "module": "glm.b0",
+          "info": [
+           "1 valeur"
+          ],
+          "doc": "Niveau moyen de log μ, avant tout effet.",
+          "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/constante/constante",
+          "params": 1,
+          "cls": "_Table",
+          "calls": 1,
+          "out": "[1]"
+         }
+        ],
+        "layout": "row",
+        "flow": "none",
+        "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel/constante"
+       }
+      ],
+      "flow": "none",
+      "doc": "Le modèle de référence. Ses effets passent tout droit jusqu'à log μ, les tours n'apprennent que ce qu'il ne sait pas.",
+      "scale": 2,
+      "id": "mod-le-hybride-esm-2/branches/glm-chemin-r-siduel"
+     },
+     {
+      "label": "Tour run",
+      "kind": "stack",
+      "module": "towers.run",
+      "info": [
+       "131 + 8 → 128 → 33"
+      ],
+      "children": [
+       {
+        "label": "Entrées du run",
+        "kind": "input",
+        "info": [
+         "conditions curées en one-hot",
+         "température, pH, agitation, OD600",
+         "indicateurs de valeur connue"
+        ],
+        "id": "mod-le-hybride-esm-2/branches/tour-run/entr-es-du-run",
+        "out": "[R, 131]"
+       },
+       {
+        "label": "Embedding génome",
+        "kind": "embed",
+        "info": [
+         "partagé avec la tour gène"
+        ],
+        "id": "genome_emb_run"
+       },
+       {
+        "label": "Concat",
+        "kind": "concat",
+        "id": "mod-le-hybride-esm-2/branches/tour-run/concat"
+       },
+       {
+        "label": "Linear 1",
+        "kind": "linear",
+        "module": "towers.run.0",
+        "info": [
+         "139 → 128"
+        ],
+        "id": "mod-le-hybride-esm-2/branches/tour-run/linear-1",
+        "params": 17920,
+        "cls": "Linear",
+        "calls": 1,
+        "in": "[R, 139]",
+        "out": "[R, 128]"
+       },
+       {
+        "label": "GELU",
+        "kind": "act",
+        "module": "towers.run.1",
+        "id": "mod-le-hybride-esm-2/branches/tour-run/gelu",
+        "params": 0,
+        "cls": "GELU",
+        "calls": 1,
+        "in": "[R, 128]",
+        "out": "[R, 128]"
+       },
+       {
+        "label": "Sortie",
+        "kind": "linear",
+        "module": "towers.run.2",
+        "info": [
+         "128 → 33"
+        ],
+        "id": "mod-le-hybride-esm-2/branches/tour-run/sortie",
+        "params": 4257,
+        "cls": "Linear",
+        "calls": 1,
+        "in": "[R, 128]",
+        "out": "[R, 33]"
+       },
+       {
+        "label": "s_run, v_run",
+        "kind": "output",
+        "info": [
+         "niveau",
+         "vecteur de 32"
+        ],
+        "id": "mod-le-hybride-esm-2/branches/tour-run/s-run-v-run"
+       }
+      ],
+      "doc": "Prédit le niveau d'un run jamais vu et son vecteur de conditions, à partir de sa fiche de curation.",
+      "scale": 2,
+      "id": "mod-le-hybride-esm-2/branches/tour-run",
+      "params": 22177,
+      "cls": "Sequential",
+      "calls": 1,
+      "in": "[R, 139]",
+      "out": "[R, 33]"
+     }
+    ],
+    "layout": "row",
+    "flow": "par",
+    "box": false,
+    "id": "mod-le-hybride-esm-2/branches"
+   },
+   {
+    "label": "Interaction",
+    "kind": "mul",
+    "info": [
+     "⟨u_gène, v_run⟩ / √32"
+    ],
+    "id": "mod-le-hybride-esm-2/interaction"
+   },
+   {
+    "label": "sorties",
+    "kind": "group",
+    "children": [
+     {
+      "label": "log μ",
+      "kind": "head",
+      "info": [
+       "offset + GLM + s_gène + s_run",
+       "+ ⟨u_gène, v_run⟩ / √32"
+      ],
+      "id": "mod-le-hybride-esm-2/sorties/log",
+      "out": "[B]"
+     },
+     {
+      "label": "log σ",
+      "kind": "head",
+      "info": [
+       "ρ du GLM + ρ_gène",
+       "+ δ du cas (7 cas)"
+      ],
+      "doc": "δ est calibré après l'entraînement sur des holdouts construits comme les régions A, B, C et D. Il rend σ plus petit pour un gène ou un run inconnu.",
+      "id": "mod-le-hybride-esm-2/sorties/log-2",
+      "out": "[B]"
+     }
+    ],
+    "layout": "row",
+    "flow": "par",
+    "box": false,
+    "id": "mod-le-hybride-esm-2/sorties"
+   },
+   {
+    "label": "NB-NLL",
+    "kind": "loss",
+    "info": [
+     "−log P(y | μ, σ)",
+     "plafond 100 nats"
+    ],
+    "doc": "La métrique du challenge, utilisée telle quelle comme perte.",
+    "scale": 3,
+    "id": "mod-le-hybride-esm-2/nb-nll"
+   }
+  ],
+  "layout": "row",
+  "id": "mod-le-hybride-esm-2"
+ }
+}

@@ -1,0 +1,8 @@
+{
+  "submission": "submissions\\hybrid_esm\\submission.py",
+  "mode": "debug",
+  "float32": true,
+  "layer_stats_interval": 0,
+  "steps": 60,
+  "refit_steps": 20
+}

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model viz</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="vendor/uPlot.min.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <!-- pictos 24x24 en trait, couleur heritee (currentColor) -->
+    <symbol id="i-input" viewBox="0 0 24 24"><rect x="2" y="8" width="6" height="8" rx="1.5"/><rect x="9" y="8" width="6" height="8" rx="1.5"/><rect x="16" y="8" width="6" height="8" rx="1.5"/></symbol>
+    <symbol id="i-output" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" class="fillc"/></symbol>
+    <symbol id="i-embed" viewBox="0 0 24 24"><rect x="2.5" y="4" width="11" height="16" rx="2"/><path d="M2.5 9.3h11M2.5 14.6h11"/><rect x="2.5" y="9.3" width="11" height="5.3" class="fillc soft"/><path d="M16 12h5.5M19 9.5l2.5 2.5-2.5 2.5"/></symbol>
+    <symbol id="i-pos" viewBox="0 0 24 24"><path d="M2 12c2.2-6 4.6-6 6.8 0s4.6 6 6.8 0 4.4-5.6 6.4-1.5"/><circle cx="8.8" cy="12" r="1.2" class="fillc"/></symbol>
+    <symbol id="i-norm" viewBox="0 0 24 24"><path d="M3 18.5h18"/><path d="M4 18.5c3.2 0 4.2-12 8-12s4.8 12 8 12"/><path d="M12 6.5v12" stroke-dasharray="2 2"/></symbol>
+    <symbol id="i-attention" viewBox="0 0 24 24"><rect x="8.5" y="2.5" width="13" height="13" rx="2" opacity=".4"/><rect x="5.5" y="5.5" width="13" height="13" rx="2" opacity=".7"/><rect x="2.5" y="8.5" width="13" height="13" rx="2" class="fillbg"/><path d="M6.8 8.5v13M11.2 8.5v13M2.5 12.8h13M2.5 17.2h13" stroke-width="1"/></symbol>
+    <symbol id="i-linear" viewBox="0 0 24 24"><path d="M6.5 4H4v16h2.5M17.5 4H20v16h-2.5"/><circle cx="8.5" cy="8.5" r="1" class="fillc"/><circle cx="12" cy="8.5" r="1" class="fillc"/><circle cx="15.5" cy="8.5" r="1" class="fillc"/><circle cx="8.5" cy="12" r="1" class="fillc"/><circle cx="12" cy="12" r="1" class="fillc"/><circle cx="15.5" cy="12" r="1" class="fillc"/><circle cx="8.5" cy="15.5" r="1" class="fillc"/><circle cx="12" cy="15.5" r="1" class="fillc"/><circle cx="15.5" cy="15.5" r="1" class="fillc"/></symbol>
+    <symbol id="i-rope" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20.2 3.8v4.6h-4.6"/><circle cx="12" cy="12" r="1.4" class="fillc"/><path d="M12 12l4.2-2.6"/></symbol>
+    <symbol id="i-sdpa" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h6V3" class="fillc soft"/><path d="M3 15h12V9M3 9h6V3M15 21v-6h6"/></symbol>
+    <symbol id="i-softmax" viewBox="0 0 24 24"><path d="M3 19h3.5c4.5 0 5-14 10.5-14H21"/><path d="M3 21h18" opacity=".4"/></symbol>
+    <symbol id="i-act" viewBox="0 0 24 24"><path d="M3 15.5c3 0 4.5 1 6.5 1S14 6 21 4"/><path d="M3 21h18M12 3v18" opacity=".35"/></symbol>
+    <symbol id="i-ffn" viewBox="0 0 24 24"><path d="M6 8l12-3M6 8l12 4M6 8l12 7M6 16l12-11M6 16l12-4M6 16l12 3M6 16l12 3" stroke-width="1" opacity=".55"/><circle cx="5" cy="8" r="2.3" class="fillbg"/><circle cx="5" cy="16" r="2.3" class="fillbg"/><circle cx="19" cy="5" r="2.3" class="fillbg"/><circle cx="19" cy="12" r="2.3" class="fillbg"/><circle cx="19" cy="19" r="2.3" class="fillbg"/></symbol>
+    <symbol id="i-moe" viewBox="0 0 24 24"><circle cx="4.5" cy="12" r="2.2"/><path d="M6.7 12H10l3.5-6H20M10 12h10M10 12l3.5 6H20"/><path d="M18 4l2 2-2 2M18 10l2 2-2 2M18 16l2 2-2 2"/></symbol>
+    <symbol id="i-router" viewBox="0 0 24 24"><path d="M12 3l8 9-8 9-8-9z"/><path d="M12 8v8M8.5 12h7" opacity=".6"/></symbol>
+    <symbol id="i-expert" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/><path d="M9.5 3v3M14.5 3v3M9.5 18v3M14.5 18v3M3 9.5h3M3 14.5h3M18 9.5h3M18 14.5h3"/><circle cx="12" cy="12" r="2" class="fillc"/></symbol>
+    <symbol id="i-head" viewBox="0 0 24 24"><path d="M4 20.5v-5M8.5 20.5v-9M13 20.5v-13M17.5 20.5v-7M21 20.5v-3"/><path d="M2.5 20.5h20" opacity=".4"/></symbol>
+    <symbol id="i-loss" viewBox="0 0 24 24"><path d="M4 3.5v17h17"/><path d="M6.5 6c3 0 3.2 9 7.5 9 3 0 4 1.6 6 1.8"/></symbol>
+    <symbol id="i-mtp" viewBox="0 0 24 24"><path d="M3 6h8M9 3.5 11.5 6 9 8.5M3 12h12.5M13 9.5l2.5 2.5-2.5 2.5M3 18h17M17.5 15.5 20 18l-2.5 2.5"/></symbol>
+    <symbol id="i-block" viewBox="0 0 24 24"><path d="M12 3 3 7.8l9 4.8 9-4.8z" class="fillbg"/><path d="m3 12 9 4.8 9-4.8"/><path d="m3 16.2 9 4.8 9-4.8"/></symbol>
+    <symbol id="i-stack" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="4.5" rx="1.5"/><rect x="4" y="9.75" width="16" height="4.5" rx="1.5"/><rect x="4" y="16.5" width="16" height="4.5" rx="1.5"/></symbol>
+    <symbol id="i-cache" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.8"/><path d="M4.5 5.5v13c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-13M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></symbol>
+    <symbol id="i-latent" viewBox="0 0 24 24"><path d="M3 4.5h18l-7 7.5v6l-4 2v-8z"/></symbol>
+    <symbol id="i-group" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="3" stroke-dasharray="3 2.5"/></symbol>
+    <symbol id="i-op" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></symbol>
+    <!-- ombre douce des cartes, style schema-svg -->
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity=".09"/></filter>
+  </defs>
+</svg>
+
+<header class="top">
+  <div class="brand">
+    <svg class="brand-ico"><use href="#i-block"/></svg>
+    <b>Model viz</b><span id="project" class="muted"></span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="arch" aria-selected="true">Architecture</button>
+    <button role="tab" data-tab="train" aria-selected="false">Entraînement</button>
+  </nav>
+  <div class="top-right">
+    <span id="live" class="live" hidden><i></i>run en cours</span>
+    <button id="theme" class="ghost" title="Thème clair, sombre ou auto">Auto</button>
+  </div>
+</header>
+
+<main>
+  <!-- ============ onglet Architecture ============ -->
+  <section id="tab-arch" class="tab">
+    <div class="toolbar">
+      <label class="field"><span>Modèle</span><select id="arch-select"></select></label>
+      <div class="search">
+        <input id="arch-search" type="search" placeholder="Chercher un bloc (q_proj, MoE, couche 3…)" autocomplete="off">
+        <div id="arch-results" class="results" hidden></div>
+      </div>
+      <span class="sep"></span>
+      <label class="field"><span>Run</span><select id="arch-run"><option value="">Aucun</option></select></label>
+      <label class="field"><span>Mesure</span><select id="arch-metric">
+        <option value="grad_norm">Norme des gradients</option>
+        <option value="update_ratio">Ratio de mise à jour</option>
+        <option value="act_rms">RMS des activations</option>
+        <option value="weight_norm">Norme des poids</option>
+        <option value="tokens">Charge des experts (MoE)</option>
+      </select></label>
+      <div class="seg" id="arch-scale" title="Comment comparer les couleurs">
+        <button data-v="role" class="on" title="Chaque bloc comparé au même bloc des autres couches">Par rôle</button>
+        <button data-v="global" title="Tous les blocs visibles sur la même échelle">Global</button>
+      </div>
+    </div>
+    <div class="steps" id="arch-steps" hidden>
+      <button id="arch-play" class="ghost icon" title="Rejouer l'entraînement">▶</button>
+      <input id="arch-step" type="range" min="0" max="0" value="0">
+      <span id="arch-step-label" class="mono"></span>
+      <div id="arch-legend" class="legend"></div>
+    </div>
+    <div class="stage" id="arch-stage">
+      <svg id="arch-svg" class="arch-svg">
+        <g id="vp"><g id="nodes"></g><g id="links"></g></g>
+      </svg>
+      <div class="summary" id="arch-summary"></div>
+      <nav class="crumbs" id="arch-crumbs"></nav>
+      <div class="zoomctl">
+        <button id="z-in" title="Zoomer">+</button>
+        <button id="z-out" title="Dézoomer">−</button>
+        <button id="z-fit" title="Vue d'ensemble (touche 0)">⤢</button>
+      </div>
+      <div class="minimap" id="minimap"><svg></svg></div>
+      <div class="hint" id="arch-hint">Molette pour zoomer · glisser pour se déplacer · clic sur un bloc pour y entrer · Échap pour remonter</div>
+      <aside class="panel" id="arch-panel" hidden></aside>
+      <div class="empty" id="arch-empty" hidden></div>
+    </div>
+  </section>
+
+  <!-- ============ onglet Entrainement ============ -->
+  <section id="tab-train" class="tab" hidden>
+    <aside class="runs">
+      <input id="run-filter" type="search" placeholder="Filtrer les runs">
+      <div id="run-list" class="run-list"></div>
+      <p class="muted small">Données lues dans <code>mlruns/</code>, le store MLflow du projet.</p>
+    </aside>
+    <div class="train-main">
+      <div id="run-status" class="run-status"></div>
+      <div class="chart-ctl">
+        <input id="metric-filter" type="search" placeholder="Filtrer les courbes (loss, lr, router…)">
+        <label class="field"><span>Lissage</span><input id="smooth" type="range" min="0" max="0.99" step="0.01" value="0.6"><span id="smooth-v" class="mono">0.60</span></label>
+        <label class="check"><input id="logy" type="checkbox"> Échelle log</label>
+        <label class="check"><input id="auto" type="checkbox" checked> Suivi en direct</label>
+      </div>
+      <div id="groups" class="groups"></div>
+      <div class="bottom">
+        <div class="seg" id="bottom-tabs">
+          <button data-v="log" class="on">Journal (run.log)</button>
+          <button data-v="params">Paramètres</button>
+        </div>
+        <div id="bottom-log" class="logbox"><pre id="log"></pre></div>
+        <div id="bottom-params" class="params" hidden>
+          <input id="param-filter" type="search" placeholder="Filtrer les paramètres">
+          <table id="param-table"></table>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="vendor/uPlot.iife.min.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

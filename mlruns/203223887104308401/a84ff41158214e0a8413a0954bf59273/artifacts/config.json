@@ -1,0 +1,6 @@
+{
+  "submission": "submissions\\hybrid_esm\\submission.py",
+  "mode": "debug",
+  "float32": true,
+  "layer_stats_interval": 10
+}
