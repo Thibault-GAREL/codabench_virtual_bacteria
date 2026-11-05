@@ -1,0 +1,680 @@
+{
+ "name": "transformer",
+ "title": "Transformer d'expression",
+ "subtitle": "une ligne (gène, run) lue comme 21 tokens, données debug",
+ "source": "submissions/transformer/submission.py",
+ "generated": "2026-11-05T16:43:35",
+ "torch": "2.5.1+cu121",
+ "symbols": {
+  "B": 37,
+  "T": 21
+ },
+ "params_total": 635054,
+ "summary": [
+  [
+   "lignes d'entraînement",
+   "385,006"
+  ],
+  [
+   "gènes",
+   "4,256"
+  ],
+  [
+   "runs",
+   "3,001"
+  ],
+  [
+   "tokens par ligne",
+   "21"
+  ],
+  [
+   "d_model",
+   "64"
+  ],
+  [
+   "couches",
+   "2"
+  ],
+  [
+   "têtes",
+   "4 (mha)"
+  ],
+  [
+   "normalisation",
+   "layernorm, post"
+  ],
+  [
+   "FFN",
+   "relu"
+  ],
+  [
+   "paramètres des blocs",
+   "99,968"
+  ]
+ ],
+ "coverage": {
+  "covered": 635054,
+  "total": 635054,
+  "missing": [],
+  "unknown_modules": [],
+  "never_called": []
+ },
+ "links": [],
+ "root": {
+  "label": "Transformer d'expression",
+  "kind": "stack",
+  "children": [
+   {
+    "label": "Observation",
+    "kind": "input",
+    "info": [
+     "un gène dans un run",
+     "offset = profondeur + longueur"
+    ],
+    "scale": 3,
+    "id": "transformer-d-expression/observation",
+    "out": "[B]"
+   },
+   {
+    "label": "branches",
+    "kind": "group",
+    "children": [
+     {
+      "label": "Transformer",
+      "kind": "stack",
+      "children": [
+       {
+        "label": "Tokens",
+        "kind": "stack",
+        "info": [
+         "21 tokens de 64"
+        ],
+        "children": [
+         {
+          "label": "Sources",
+          "kind": "group",
+          "children": [
+           {
+            "label": "Gène",
+            "kind": "embed",
+            "module": "gene_emb",
+            "info": [
+             "4,256 + MASK"
+            ],
+            "doc": "Un vecteur libre par gène vu. Un gène jamais vu (région C) lit le token MASK, appris avec la dropout de niveau.",
+            "id": "transformer-d-expression/branches/transformer/tokens/sources/g-ne",
+            "params": 272448,
+            "cls": "Embedding",
+            "calls": 1,
+            "in": "[B]",
+            "out": "[B, 64]"
+           },
+           {
+            "label": "Protéine et signaux",
+            "kind": "linear",
+            "module": "features",
+            "info": [
+             "73 → 64",
+             "ESM-2 (ACP), CAI, opéron..."
+            ],
+            "id": "transformer-d-expression/branches/transformer/tokens/sources/prot-ine-et-signaux",
+            "params": 4736,
+            "cls": "Linear",
+            "calls": 1,
+            "in": "[B, 73]",
+            "out": "[B, 64]"
+           },
+           {
+            "label": "Génome",
+            "kind": "embed",
+            "module": "genome_emb",
+            "info": [
+             "1 génomes"
+            ],
+            "id": "transformer-d-expression/branches/transformer/tokens/sources/g-nome",
+            "params": 64,
+            "cls": "Embedding",
+            "calls": 1,
+            "in": "[B]",
+            "out": "[B, 64]"
+           },
+           {
+            "label": "Run",
+            "kind": "embed",
+            "module": "run_emb",
+            "info": [
+             "3,001 + MASK"
+            ],
+            "id": "transformer-d-expression/branches/transformer/tokens/sources/run",
+            "params": 192128,
+            "cls": "Embedding",
+            "calls": 1,
+            "in": "[B]",
+            "out": "[B, 64]"
+           },
+           {
+            "label": "Projet",
+            "kind": "embed",
+            "module": "prj_emb",
+            "info": [
+             "176 + MASK"
+            ],
+            "id": "transformer-d-expression/branches/transformer/tokens/sources/projet",
+            "params": 11328,
+            "cls": "Embedding",
+            "calls": 1,
+            "in": "[B]",
+            "out": "[B, 64]"
+           },
+           {
+            "label": "Condition",
+            "kind": "embed",
+            "module": "cond_emb",
+            "info": [
+             "504 + MASK + aucune"
+            ],
+            "id": "transformer-d-expression/branches/transformer/tokens/sources/condition",
+            "params": 32384,
+            "cls": "Embedding",
+            "calls": 1,
+            "in": "[B]",
+            "out": "[B, 64]"
+           },
+           {
+            "label": "Champs de la fiche",
+            "kind": "embed",
+            "module": "field_emb",
+            "info": [
+             "10 champs, 125 valeurs"
+            ],
+            "doc": "Milieu, oxygène, phase de croissance, perturbation...",
+            "id": "transformer-d-expression/branches/transformer/tokens/sources/champs-de-la-fiche",
+            "params": 8000,
+            "cls": "Embedding",
+            "calls": 1,
+            "in": "[B, 10]",
+            "out": "[B, 10, 64]"
+           },
+           {
+            "label": "Nombres",
+            "kind": "linear",
+            "module": "numbers",
+            "info": [
+             "température, pH, agitation, OD600",
+             "z·w + b, ou token manquant"
+            ],
+            "id": "transformer-d-expression/branches/transformer/tokens/sources/nombres",
+            "params": 768,
+            "cls": "_Numbers",
+            "calls": 1,
+            "in": "[B, 4]",
+            "out": "[B, 4, 64]"
+           }
+          ],
+          "layout": "grid",
+          "flow": "none",
+          "cols": 2,
+          "id": "transformer-d-expression/branches/transformer/tokens/sources"
+         },
+         {
+          "label": "Concat",
+          "kind": "concat",
+          "id": "transformer-d-expression/branches/transformer/tokens/concat"
+         },
+         {
+          "label": "CLS + slots",
+          "kind": "pos",
+          "module": "slots",
+          "info": [
+           "un embedding par champ"
+          ],
+          "id": "transformer-d-expression/branches/transformer/tokens/cls-slots",
+          "params": 1408,
+          "cls": "_Slots",
+          "calls": 1,
+          "in": "[B, T−1, 64]",
+          "out": "[B, T, 64]"
+         }
+        ],
+        "scale": 2,
+        "id": "transformer-d-expression/branches/transformer/tokens"
+       },
+       {
+        "label": "Blocs ×2",
+        "kind": "stack",
+        "children": [
+         {
+          "label": "Bloc 1",
+          "kind": "block",
+          "module": "blocks.0",
+          "info": [
+           "norme post"
+          ],
+          "children": [
+           {
+            "label": "Attention",
+            "kind": "attention",
+            "module": "blocks.0.attn",
+            "info": [
+             "4 têtes, 4 KV"
+            ],
+            "children": [
+             {
+              "label": "Q",
+              "kind": "linear",
+              "module": "blocks.0.attn.q",
+              "info": [
+               "64 → 4 têtes × 16"
+              ],
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention/q",
+              "params": 4160,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 64]",
+              "out": "[B, T, 64]"
+             },
+             {
+              "label": "K",
+              "kind": "linear",
+              "module": "blocks.0.attn.k",
+              "info": [
+               "64 → 4 × 16"
+              ],
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention/k",
+              "params": 4160,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 64]",
+              "out": "[B, T, 64]"
+             },
+             {
+              "label": "V",
+              "kind": "linear",
+              "module": "blocks.0.attn.v",
+              "info": [
+               "64 → 4 × 16"
+              ],
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention/v",
+              "params": 4160,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 64]",
+              "out": "[B, T, 64]"
+             },
+             {
+              "label": "softmax(QKᵀ/√d) V",
+              "kind": "softmax",
+              "info": [
+               "tous les tokens se voient"
+              ],
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention/softmax-qk-d-v"
+             },
+             {
+              "label": "Sortie",
+              "kind": "linear",
+              "module": "blocks.0.attn.out",
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention/sortie",
+              "params": 4160,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 64]",
+              "out": "[B, T, 64]"
+             }
+            ],
+            "badge": "MHA",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention",
+            "params": 16640,
+            "cls": "_Attention",
+            "calls": 1,
+            "in": "[B, T, 64]",
+            "out": "[B, T, 64]"
+           },
+           {
+            "label": "+",
+            "kind": "add",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/n"
+           },
+           {
+            "label": "layernorm",
+            "kind": "norm",
+            "module": "blocks.0.norm1",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/layernorm",
+            "params": 128,
+            "cls": "_Norm",
+            "calls": 1,
+            "in": "[B, T, 64]",
+            "out": "[B, T, 64]"
+           },
+           {
+            "label": "FFN",
+            "kind": "ffn",
+            "module": "blocks.0.ffn",
+            "info": [
+             "64 → 256 → 64"
+            ],
+            "children": [
+             {
+              "label": "Montée",
+              "kind": "linear",
+              "module": "blocks.0.ffn.up",
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn/mont-e",
+              "params": 16640,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 64]",
+              "out": "[B, T, 256]"
+             },
+             {
+              "label": "relu",
+              "kind": "act",
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn/relu"
+             },
+             {
+              "label": "Descente",
+              "kind": "linear",
+              "module": "blocks.0.ffn.down",
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn/descente",
+              "params": 16448,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 256]",
+              "out": "[B, T, 64]"
+             }
+            ],
+            "badge": "relu",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn",
+            "params": 33088,
+            "cls": "_FFN",
+            "calls": 1,
+            "in": "[B, T, 64]",
+            "out": "[B, T, 64]"
+           },
+           {
+            "label": "+",
+            "kind": "add",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/n-2"
+           },
+           {
+            "label": "layernorm",
+            "kind": "norm",
+            "module": "blocks.0.norm2",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/layernorm-2",
+            "params": 128,
+            "cls": "_Norm",
+            "calls": 1,
+            "in": "[B, T, 64]",
+            "out": "[B, T, 64]"
+           }
+          ],
+          "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1",
+          "params": 49984,
+          "cls": "_Block",
+          "calls": 1,
+          "in": "[B, T, 64]",
+          "out": "[B, T, 64]"
+         },
+         {
+          "label": "Bloc 2",
+          "kind": "block",
+          "module": "blocks.1",
+          "info": [
+           "norme post"
+          ],
+          "children": [
+           {
+            "label": "Attention",
+            "kind": "attention",
+            "module": "blocks.1.attn",
+            "info": [
+             "4 têtes, 4 KV"
+            ],
+            "children": [
+             {
+              "label": "Q",
+              "kind": "linear",
+              "module": "blocks.1.attn.q",
+              "info": [
+               "64 → 4 têtes × 16"
+              ],
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention/q",
+              "params": 4160,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 64]",
+              "out": "[B, T, 64]"
+             },
+             {
+              "label": "K",
+              "kind": "linear",
+              "module": "blocks.1.attn.k",
+              "info": [
+               "64 → 4 × 16"
+              ],
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention/k",
+              "params": 4160,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 64]",
+              "out": "[B, T, 64]"
+             },
+             {
+              "label": "V",
+              "kind": "linear",
+              "module": "blocks.1.attn.v",
+              "info": [
+               "64 → 4 × 16"
+              ],
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention/v",
+              "params": 4160,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 64]",
+              "out": "[B, T, 64]"
+             },
+             {
+              "label": "softmax(QKᵀ/√d) V",
+              "kind": "softmax",
+              "info": [
+               "tous les tokens se voient"
+              ],
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention/softmax-qk-d-v"
+             },
+             {
+              "label": "Sortie",
+              "kind": "linear",
+              "module": "blocks.1.attn.out",
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention/sortie",
+              "params": 4160,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 64]",
+              "out": "[B, T, 64]"
+             }
+            ],
+            "badge": "MHA",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention",
+            "params": 16640,
+            "cls": "_Attention",
+            "calls": 1,
+            "in": "[B, T, 64]",
+            "out": "[B, T, 64]"
+           },
+           {
+            "label": "+",
+            "kind": "add",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/n"
+           },
+           {
+            "label": "layernorm",
+            "kind": "norm",
+            "module": "blocks.1.norm1",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/layernorm",
+            "params": 128,
+            "cls": "_Norm",
+            "calls": 1,
+            "in": "[B, T, 64]",
+            "out": "[B, T, 64]"
+           },
+           {
+            "label": "FFN",
+            "kind": "ffn",
+            "module": "blocks.1.ffn",
+            "info": [
+             "64 → 256 → 64"
+            ],
+            "children": [
+             {
+              "label": "Montée",
+              "kind": "linear",
+              "module": "blocks.1.ffn.up",
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn/mont-e",
+              "params": 16640,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 64]",
+              "out": "[B, T, 256]"
+             },
+             {
+              "label": "relu",
+              "kind": "act",
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn/relu"
+             },
+             {
+              "label": "Descente",
+              "kind": "linear",
+              "module": "blocks.1.ffn.down",
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn/descente",
+              "params": 16448,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, T, 256]",
+              "out": "[B, T, 64]"
+             }
+            ],
+            "badge": "relu",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn",
+            "params": 33088,
+            "cls": "_FFN",
+            "calls": 1,
+            "in": "[B, T, 64]",
+            "out": "[B, T, 64]"
+           },
+           {
+            "label": "+",
+            "kind": "add",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/n-2"
+           },
+           {
+            "label": "layernorm",
+            "kind": "norm",
+            "module": "blocks.1.norm2",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/layernorm-2",
+            "params": 128,
+            "cls": "_Norm",
+            "calls": 1,
+            "in": "[B, T, 64]",
+            "out": "[B, T, 64]"
+           }
+          ],
+          "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2",
+          "params": 49984,
+          "cls": "_Block",
+          "calls": 1,
+          "in": "[B, T, 64]",
+          "out": "[B, T, 64]"
+         }
+        ],
+        "id": "transformer-d-expression/branches/transformer/blocs-2"
+       },
+       {
+        "label": "Tête",
+        "kind": "head",
+        "module": "head",
+        "info": [
+         "CLS → log μ, log σ",
+         "à 0 au départ"
+        ],
+        "id": "transformer-d-expression/branches/transformer/t-te",
+        "params": 130,
+        "cls": "Linear",
+        "calls": 1,
+        "in": "[B, 64]",
+        "out": "[B, 2]"
+       }
+      ],
+      "scale": 2,
+      "id": "transformer-d-expression/branches/transformer"
+     },
+     {
+      "label": "Effets GLM additifs",
+      "kind": "embed",
+      "module": "bias",
+      "info": [
+       "b0 + génome + gène + run + projet",
+       "ρ0 + ρ gène",
+       "masqués si jamais vus"
+      ],
+      "doc": "Démarrés aux estimations de moments, comme le GLM : dès le premier step le modèle prédit comme un modèle additif, le transformer apprend le reste.",
+      "scale": 2,
+      "id": "transformer-d-expression/branches/effets-glm-additifs",
+      "params": 11692,
+      "cls": "_Biases",
+      "calls": 1,
+      "in": "[B]",
+      "out": "[B]"
+     }
+    ],
+    "layout": "row",
+    "flow": "par",
+    "box": false,
+    "id": "transformer-d-expression/branches"
+   },
+   {
+    "label": "+",
+    "kind": "add",
+    "id": "transformer-d-expression/n"
+   },
+   {
+    "label": "sorties",
+    "kind": "group",
+    "children": [
+     {
+      "label": "log μ",
+      "kind": "head",
+      "info": [
+       "offset + effets + tête"
+      ],
+      "id": "transformer-d-expression/sorties/log",
+      "out": "[B]"
+     },
+     {
+      "label": "log σ",
+      "kind": "head",
+      "info": [
+       "ρ + tête",
+       "+ δ du cas (7 cas)"
+      ],
+      "id": "transformer-d-expression/sorties/log-2",
+      "out": "[B]"
+     }
+    ],
+    "layout": "row",
+    "flow": "par",
+    "box": false,
+    "id": "transformer-d-expression/sorties"
+   },
+   {
+    "label": "NB-NLL",
+    "kind": "loss",
+    "info": [
+     "−log P(y | μ, σ)",
+     "plafond 100 nats"
+    ],
+    "scale": 3,
+    "id": "transformer-d-expression/nb-nll"
+   }
+  ],
+  "layout": "row",
+  "id": "transformer-d-expression"
+ }
+}

@@ -328,6 +328,13 @@ select:focus, input[type="search"]:focus { border-color: var(--focus); }
 .params td { border-bottom: 1px solid var(--border); padding: 4px 8px; vertical-align: top; }
 .params td:first-child { font-family: var(--mono); color: var(--text-2); width: 40%; }
 .nodata { color: var(--muted); padding: 24px 0; }
+.values { border-collapse: collapse; font-size: 12px; min-width: 420px; max-width: 100%; }
+.values th { text-align: left; font-weight: 600; padding: 4px 10px; border-bottom: 1px solid var(--border-2); white-space: nowrap; }
+.values th .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.values td { border-bottom: 1px solid var(--border); padding: 3px 10px; }
+.values td:first-child { font-family: var(--mono); color: var(--text-2); }
+.values td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.values tr.grp td { font-family: inherit; font-weight: 600; color: var(--muted); padding-top: 10px; border-bottom: 0; }
 
 @media (max-width: 760px) {
   #tab-train { grid-template-columns: 1fr; }

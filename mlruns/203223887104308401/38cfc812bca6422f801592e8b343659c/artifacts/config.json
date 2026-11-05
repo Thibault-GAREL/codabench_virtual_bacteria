@@ -1,0 +1,12 @@
+{
+  "submission": "submissions\\transformer\\submission.py",
+  "layer_stats_interval": 0,
+  "mode": "debug",
+  "suite": "speed",
+  "variant": "fp32_naive",
+  "epochs": 1.0,
+  "refit_epochs": 0.0,
+  "eval_every": 20,
+  "max_minutes": 240.0,
+  "batch": 4096
+}

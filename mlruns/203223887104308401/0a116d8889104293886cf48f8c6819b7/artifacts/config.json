@@ -1,0 +1,14 @@
+{
+  "submission": "submissions\\transformer\\submission.py",
+  "layer_stats_interval": 0,
+  "mode": "debug",
+  "suite": "speed",
+  "variant": "fp16_sdpa",
+  "sdpa": true,
+  "precision": "fp16",
+  "epochs": 0.3,
+  "refit_epochs": 0.0,
+  "eval_every": 1000,
+  "max_minutes": 240.0,
+  "batch": 4096
+}

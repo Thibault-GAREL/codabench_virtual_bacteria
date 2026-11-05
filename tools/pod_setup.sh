@@ -40,12 +40,15 @@ if [ ! -f benchmark/data/bacteria/train/train.parquet ]; then
 fi
 log "prepared data ok"
 
+# CLEAN=0 skips the clean dataset: the transformer and the hybrid only need
+# gene_features.npz, copied from the local machine
+# (scp ... benchmark/data/bacteria/clean/train/gene_features.npz)
 workers=$(nproc)
 if [ "$workers" -gt 12 ]; then workers=12; fi
-if [ ! -f benchmark/data/bacteria/clean/train/report.json ]; then
+if [ "${CLEAN:-1}" = "1" ] && [ ! -f benchmark/data/bacteria/clean/train/report.json ]; then
     python3 -u tools/build_clean_dataset.py --mode train --workers "$workers"
+    log "clean dataset ok"
 fi
-log "clean dataset ok"
 
 python3 - <<'EOF'
 import benchopt, Bio, torch, transformers

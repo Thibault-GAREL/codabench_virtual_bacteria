@@ -1,0 +1,14 @@
+{
+  "submission": "submissions\\transformer\\submission.py",
+  "layer_stats_interval": 20,
+  "mode": "debug",
+  "suite": "arch2017",
+  "variant": "prenorm",
+  "sdpa": true,
+  "precision": "fp16",
+  "norm_place": "pre",
+  "epochs": 1.0,
+  "refit_epochs": 0.25,
+  "max_minutes": 240.0,
+  "batch": 4096
+}

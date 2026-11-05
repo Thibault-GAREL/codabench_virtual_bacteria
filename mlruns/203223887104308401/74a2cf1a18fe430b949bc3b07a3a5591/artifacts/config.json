@@ -1,0 +1,10 @@
+{
+  "submission": "submissions\\glm_hybrid\\submission.py",
+  "mode": "debug",
+  "float32": true,
+  "layer_stats_interval": 0,
+  "steps": 60,
+  "refit_steps": 20,
+  "glm_steps": 60,
+  "glm_refit_steps": 20
+}

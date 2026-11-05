@@ -1,13 +1,17 @@
-"""Build the architecture file read by the visualiser (visualisation/arch/).
+"""Build the architecture files read by the visualiser (visualisation/arch/).
 
-Instantiates the real hybrid model of ``submissions/hybrid_esm/submission.py``
-on real data (``prepare`` builds the index, the pairs, the tower inputs and the
-towers), measures it with one forward on a few rows, and describes the diagram:
-the gene tower, the GLM effect tables and the run tower, side by side, then
-the interaction, log mu, log sigma and the NB loss.
+Instantiates the real model of a submission on real data (``prepare`` builds
+the index, the pairs and the per gene and per run tables), measures it with
+one forward on a few rows, and describes the diagram.
 
-    python visualisation/build_arch.py                 # debug data, quick
-    python visualisation/build_arch.py --mode train    # real sizes (pod, 16 GB+)
+- ``hybrid``: the gene tower, the GLM effect tables and the run tower, side
+  by side, then the interaction, log mu, log sigma and the NB loss.
+- ``transformer``: the tokens of a row, the blocks, the head and the additive
+  GLM effects, then log mu, log sigma and the NB loss.
+
+    python visualisation/build_arch.py                       # both, debug data
+    python visualisation/build_arch.py --model transformer --param norm_place=pre
+    python visualisation/build_arch.py --mode train          # real sizes (pod, 16 GB+)
 """
 
 import argparse
@@ -27,7 +31,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from archkit import Probe, link, node, write  # noqa: E402
 
-SUBMISSION = ROOT / "submissions" / "hybrid_esm" / "submission.py"
+SUBMISSIONS = {
+    "hybrid": ROOT / "submissions" / "hybrid_esm" / "submission.py",
+    "transformer": ROOT / "submissions" / "transformer" / "submission.py",
+}
 B = 37  # rows of the measuring forward, a size no real dimension takes
 
 TABLES = {
@@ -183,24 +190,200 @@ def describe(net, n_in_gene, n_in_run, dim):
     return root, links
 
 
+def describe_transformer(net, cfg, tables):
+    """Tokens, blocks, head and id biases of the expression transformer."""
+    d = cfg.d_model
+
+    def attention(i, att):
+        path = f"blocks.{i}.attn"
+        kids = [node("Q", "linear", module=f"{path}.q",
+                     info=[f"{d} → {att.h} têtes × {att.hd}"]),
+                node("K", "linear", module=f"{path}.k",
+                     info=[f"{d} → {att.kv} × {att.hd}"]),
+                node("V", "linear", module=f"{path}.v",
+                     info=[f"{d} → {att.kv} × {att.hd}"])]
+        if cfg.qk_norm:
+            kids += [node("QK-norm (q)", "norm", module=f"{path}.q_norm"),
+                     node("QK-norm (k)", "norm", module=f"{path}.k_norm")]
+        kids.append(node("SDPA" if att.sdpa else "softmax(QKᵀ/√d) V",
+                         "sdpa" if att.sdpa else "softmax",
+                         info=([f"softcap {cfg.softcap:g}"] if cfg.softcap
+                               else ["tous les tokens se voient"])))
+        kids.append(node("Sortie", "linear", module=f"{path}.out"))
+        return node("Attention", "attention", module=path,
+                    badge=cfg.attn.upper(),
+                    info=[f"{att.h} têtes, {att.kv} KV"], children=kids)
+
+    def ffn(i, f):
+        path = f"blocks.{i}.ffn"
+        if cfg.moe_experts:
+            experts = [node(f"Expert {j}", "expert",
+                            module=f"{path}.experts.{j}")
+                       for j in range(cfg.moe_experts)]
+            return node("MoE", "moe", module=path,
+                        badge=f"top-{cfg.moe_top_k}",
+                        info=[f"{cfg.moe_experts} experts {cfg.ffn}"],
+                        children=[node("Routeur", "router",
+                                       module=f"{path}.router"),
+                                  node("Experts", "group", layout="grid",
+                                       flow="none", cols=4,
+                                       children=experts)])
+        return node("FFN", "ffn", module=path, badge=cfg.ffn,
+                    info=[f"{d} → {f.down.in_features} → {d}"],
+                    children=[node("Montée", "linear", module=f"{path}.up"),
+                              node(cfg.ffn, "act"),
+                              node("Descente", "linear",
+                                   module=f"{path}.down")])
+
+    def norm(i, name):
+        return node(cfg.norm, "norm", module=f"blocks.{i}.{name}")
+
+    blocks = []
+    for i, blk in enumerate(net.blocks):
+        a, f = attention(i, blk.attn), ffn(i, blk.ffn)
+        if cfg.norm_place == "post":
+            kids = [a, node("+", "add"), norm(i, "norm1"),
+                    f, node("+", "add"), norm(i, "norm2")]
+        elif cfg.norm_place == "pre":
+            kids = [norm(i, "norm1"), a, node("+", "add"),
+                    norm(i, "norm2"), f, node("+", "add")]
+        else:
+            kids = [norm(i, "norm1"), a, norm(i, "post1"), node("+", "add"),
+                    norm(i, "norm2"), f, norm(i, "post2"), node("+", "add")]
+        blocks.append(node(f"Bloc {i + 1}", "block", module=f"blocks.{i}",
+                           info=[f"norme {cfg.norm_place}"], children=kids))
+
+    n_fields = tables["run_cat"].shape[1]
+    sources = node("Sources", "group", layout="grid", cols=2, flow="none",
+                   children=[
+        node("Gène", "embed", module="gene_emb",
+             info=[f"{tables['n_gene']:,} + MASK"],
+             doc="Un vecteur libre par gène vu. Un gène jamais vu (région "
+                 "C) lit le token MASK, appris avec la dropout de niveau."),
+        node("Protéine et signaux", "linear", module="features",
+             info=[f"{tables['x_gene'].shape[1]} → {d}",
+                   "ESM-2 (ACP), CAI, opéron..."]),
+        node("Génome", "embed", module="genome_emb",
+             info=[f"{tables['n_genome']} génomes"]),
+        node("Run", "embed", module="run_emb",
+             info=[f"{tables['n_run']:,} + MASK"]),
+        node("Projet", "embed", module="prj_emb",
+             info=[f"{tables['n_prj']:,} + MASK"]),
+        node("Condition", "embed", module="cond_emb",
+             info=[f"{tables['n_cond']:,} + MASK + aucune"]),
+        node("Champs de la fiche", "embed", module="field_emb",
+             info=[f"{n_fields} champs, {tables['n_vocab']} valeurs"],
+             doc="Milieu, oxygène, phase de croissance, perturbation..."),
+        node("Nombres", "linear", module="numbers",
+             info=["température, pH, agitation, OD600",
+                   "z·w + b, ou token manquant"]),
+    ])
+    tokens = node("Tokens", "stack", scale=2,
+                  info=[f"{net.n_tokens} tokens de {d}"],
+                  children=[sources, node("Concat", "concat"),
+                            node("CLS + slots", "pos", module="slots",
+                                 info=["un embedding par champ"])])
+    body = [tokens, node(f"Blocs ×{cfg.n_layers}", "stack", children=blocks)]
+    if cfg.norm_place != "post":
+        body.append(node("Norme finale", "norm", module="final_norm"))
+    body.append(node("Tête", "head", module="head",
+                     info=["CLS → log μ, log σ", "à 0 au départ"]))
+    transformer = node("Transformer", "stack", scale=2, children=body)
+    biases = node("Effets GLM additifs", "embed", module="bias", scale=2,
+                  info=["b0 + génome + gène + run + projet",
+                        "ρ0 + ρ gène", "masqués si jamais vus"],
+                  doc="Démarrés aux estimations de moments, comme le GLM : "
+                      "dès le premier step le modèle prédit comme un modèle "
+                      "additif, le transformer apprend le reste.")
+    root = node("Transformer d'expression", "stack", layout="row", children=[
+        node("Observation", "input", scale=3, shape="[B]",
+             info=["un gène dans un run", "offset = profondeur + longueur"]),
+        node("branches", "group", box=False, layout="row", flow="par",
+             children=[transformer, biases]),
+        node("+", "add"),
+        node("sorties", "group", box=False, layout="row", flow="par",
+             children=[node("log μ", "head", shape="[B]",
+                            info=["offset + effets + tête"]),
+                       node("log σ", "head", shape="[B]",
+                            info=["ρ + tête", "+ δ du cas (7 cas)"])]),
+        node("NB-NLL", "loss", scale=3,
+             info=["−log P(y | μ, σ)", "plafond 100 nats"]),
+    ])
+    return root, []
+
+
+def _meta(data):
+    meta = {k: v for k, v in data.items()
+            if k not in ("train_df", "samples_df", "genomes_dir", "test_sets")}
+    meta["submission_dir"] = None
+    return meta
+
+
+def build_transformer(sub, data, mode, params):
+    cfg = sub.TConfig(**params)
+    model = sub.TransformerModel(_meta(data), cfg)
+    gene, run, y, off = model.prepare(data["train_df"], data["samples_df"])
+    ix = model.ix
+    bias = model._bias_init(gene, run, y, off, np.ones(len(y), bool))
+    torch.manual_seed(0)
+    net = sub._ExprTransformer(cfg, model.tables, bias).eval()
+
+    rows = np.random.default_rng(0).choice(len(y), B, replace=False)
+    g = torch.as_tensor(gene[rows]).long()
+    r = torch.as_tensor(run[rows]).long()
+    on = [torch.ones(B, dtype=torch.bool) for _ in range(4)]
+    probe = Probe(net, lambda: net(g, r, *on),
+                  symbols={"B": B, "T": net.n_tokens})
+    root, links = describe_transformer(net, cfg, model.tables)
+    n_blocks = sum(p.numel() for p in net.blocks.parameters())
+    write(HERE / "arch" / "transformer.json", root, probe, name="transformer",
+          title="Transformer d'expression",
+          subtitle=f"une ligne (gène, run) lue comme {net.n_tokens} tokens, "
+                   f"données {mode}",
+          summary=[("lignes d'entraînement", f"{len(y):,}"),
+                   ("gènes", f"{ix.n_gene:,}"), ("runs", f"{ix.n_run:,}"),
+                   ("tokens par ligne", f"{net.n_tokens}"),
+                   ("d_model", f"{cfg.d_model}"),
+                   ("couches", f"{cfg.n_layers}"),
+                   ("têtes", f"{cfg.n_heads} ({cfg.attn})"),
+                   ("normalisation", f"{cfg.norm}, {cfg.norm_place}"),
+                   ("FFN", cfg.ffn if not cfg.moe_experts else
+                    f"MoE {cfg.moe_experts} experts, top {cfg.moe_top_k}"),
+                   ("paramètres des blocs", f"{n_blocks:,}")],
+          links=links, source="submissions/transformer/submission.py")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--model", default="all",
+                        choices=["all", "hybrid", "transformer"])
     parser.add_argument("--mode", default="debug", choices=["debug", "train"])
     parser.add_argument("--features", type=Path, default=None,
                         help="gene_features.npz (default: the clean data "
                         "folder of the mode)")
+    parser.add_argument("--param", action="append", default=[],
+                        help="TConfig field of the transformer, name=value")
     args = parser.parse_args()
 
+    from evaluate_local import parse_value
     features = args.features or (ROOT / "benchmark" / "data" / "bacteria" /
                                  "clean" / args.mode / "gene_features.npz")
     if features.exists():
         os.environ["BACTERIA_GENE_FEATURES"] = str(features)
-    sub = load_module(SUBMISSION, "submission")
     data = load_data(args.mode)
-    meta = {k: v for k, v in data.items()
-            if k not in ("train_df", "samples_df", "genomes_dir", "test_sets")}
-    meta["submission_dir"] = None
-    model = sub.HybridModel(meta)
+    if args.model in ("all", "transformer"):
+        params = {k: parse_value(v) for k, v in
+                  (p.split("=", 1) for p in args.param)}
+        build_transformer(load_module(SUBMISSIONS["transformer"],
+                                      "submission_tf"), data, args.mode,
+                          params)
+    if args.model in ("all", "hybrid"):
+        build_hybrid(load_module(SUBMISSIONS["hybrid"], "submission"), data,
+                     args.mode)
+
+
+def build_hybrid(sub, data, mode):
+    model = sub.HybridModel(_meta(data))
     gene, run, y, off = model.prepare(data["train_df"], data["samples_df"])
     ix = model.ix
     init = model._init_params(gene, run, y, off, np.ones(len(y), bool))
@@ -231,7 +414,7 @@ def main():
     write(HERE / "arch" / "hybrid-esm.json", root, probe, name="hybrid-esm",
           title="Modèle hybride ESM-2",
           subtitle=f"GLM binomiale négative + tour gène (ESM-2) + tour run, "
-                   f"données {args.mode}",
+                   f"données {mode}",
           summary=[("lignes d'entraînement", f"{len(y):,}"),
                    ("gènes", f"{ix.n_gene:,}"), ("runs", f"{ix.n_run:,}"),
                    ("projets", f"{ix.n_prj:,}"),

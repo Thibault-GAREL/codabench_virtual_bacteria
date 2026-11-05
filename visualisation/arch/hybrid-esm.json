@@ -3,7 +3,7 @@
  "title": "Modèle hybride ESM-2",
  "subtitle": "GLM binomiale négative + tour gène (ESM-2) + tour run, données debug",
  "source": "submissions/hybrid_esm/submission.py",
- "generated": "2026-11-05T11:58:33",
+ "generated": "2026-11-05T16:43:15",
  "torch": "2.5.1+cu121",
  "symbols": {
   "B": 37,

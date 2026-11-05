@@ -1,0 +1,8 @@
+{
+  "submission": "submissions\\glm_nb\\submission.py",
+  "layer_stats_interval": 10,
+  "mode": "debug",
+  "float32": true,
+  "steps": 60,
+  "refit_steps": 20
+}

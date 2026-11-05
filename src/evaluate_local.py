@@ -9,9 +9,13 @@ RunLogger.
 
     python src/evaluate_local.py --submission submissions/glm_nb/submission.py --mode train
     python src/evaluate_local.py --submission ... --param steps=50 --param interaction=false
+
+``load_data`` and ``evaluate`` are reused by ``tools/ablate.py``, which loads
+the data once and fits many variants of one submission.
 """
 
 import argparse
+import gc
 import importlib.util
 import sys
 import time
@@ -77,6 +81,124 @@ def memory_gb():
         return float("nan")
 
 
+def load_data(mode, float32=True, log=print):
+    """The dataset's own ``get_data``, with lean parquet reading.
+
+    Returns the dict of ``get_data`` (``train_df``, ``samples_df``,
+    ``genomes_dir``, ``test_sets`` and the meta tables).
+    """
+    dataset = load_module(BENCHMARK / "datasets" / "bacterial_expression.py",
+                          "bacterial_expression")
+    data_home = BENCHMARK / "data"
+    dataset.get_data_path = (lambda key=None: (data_home / key).resolve()
+                             if key else data_home.resolve())
+    t = time.time()
+    dataset.pd.read_parquet, original = lean_read_parquet, \
+        dataset.pd.read_parquet
+    try:
+        data = dataset.Dataset.get_instance(mode=mode).get_data()
+    finally:
+        dataset.pd.read_parquet = original
+    if float32:
+        # Halves the float columns of the 69 M training rows. The only
+        # difference with the platform, where the RAM is 32 GB.
+        train_df = data["train_df"]
+        for column in ("readcount", "log_length_ratio", "log_size_factor"):
+            train_df[column] = train_df[column].astype(np.float32)
+    log(f"train {len(data['train_df']):,} lignes | " + ", ".join(
+        f"{k} {len(v[1]):,}" for k, v in data["test_sets"].items())
+        + f" | {time.time() - t:.0f}s, RAM {memory_gb():.1f} Go")
+    return data
+
+
+def evaluate(module, submission, params, name, data, layer_every=10,
+             extra_config=None, free_train=False):
+    """Fit the submission's Solver with ``params``, score every region.
+
+    One MLflow run and one run.log. Returns the dict of scores. With
+    ``free_train`` the training rows are dropped after the fit, as the
+    single run CLI does to keep the RAM low.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except ImportError:
+        torch = None
+    test_sets = data["test_sets"]
+    meta = {k: v for k, v in data.items()
+            if k not in ("train_df", "samples_df", "genomes_dir", "test_sets")}
+    with RunLogger(name) as run:
+        run.config({"submission": str(Path(submission).relative_to(ROOT)),
+                    "layer_stats_interval": layer_every,
+                    **(extra_config or {}), **params})
+        run.section("donnees")
+        run.log(f"train {len(data['train_df']):,} lignes | " + ", ".join(
+            f"{k} {len(v[1]):,}" for k, v in test_sets.items())
+            + f" | RAM {memory_gb():.1f} Go")
+        solver = module.Solver.get_instance(**params)
+        solver.set_objective(train_df=data["train_df"],
+                             samples_df=data["samples_df"],
+                             genomes_dir=data["genomes_dir"], **meta)
+        model = solver.model
+        model.log, model.metric, model.track = run.log, run.metric, run.track
+        if hasattr(model, "layer_stats") and layer_every > 0:
+            model.layer_stats = (lambda module_: LayerStats(
+                module_, every=layer_every))
+
+        run.section("entrainement")
+        t = time.time()
+        solver.run(None)
+        fit_s = time.time() - t
+        model = solver.get_result()["model"]
+        solver.train_df = None
+        if free_train:
+            data["train_df"] = None
+        gc.collect()
+        run.log(f"fit {fit_s:.0f}s, RAM {memory_gb():.1f} Go")
+
+        run.section("evaluation")
+        scores = {}
+        t = time.time()
+        for region, (features, counts) in test_sets.items():
+            preds = model.predict(features, data["samples_df"],
+                                  data["genomes_dir"])
+            mu, sigma = check_predictions(preds, len(counts))
+            scores[f"eval/nb_nll_{region}"] = nb_nll(counts, mu, sigma)
+            scores[f"eval/mae_{region}"] = log_mae(counts, mu)
+            scores[f"eval/r2_{region}"] = log_r2(counts, mu)
+        predict_s = time.time() - t
+        for metric in ("nb_nll", "mae", "r2"):
+            keys = [f"eval/{metric}_{r}" for r in CHALLENGE
+                    if f"eval/{metric}_{r}" in scores]
+            if keys:
+                scores[f"eval/{metric}_challenge"] = float(
+                    np.mean([scores[k] for k in keys]))
+        gpu = (torch.cuda.max_memory_allocated() / 1e9
+               if torch is not None and torch.cuda.is_available()
+               else float("nan"))
+        scores.update({"time/fit_s": fit_s, "time/predict_s": predict_s,
+                       "memory/gpu_peak_gb": gpu})
+        run.metric(**scores)
+
+        run.log("region   NB-NLL     MAE      R2   lignes")
+        for region in REGIONS + ["challenge"]:
+            if f"eval/nb_nll_{region}" not in scores:
+                continue
+            rows = len(test_sets[region][1]) if region in test_sets else ""
+            run.log(f"{region:<9}{scores[f'eval/nb_nll_{region}']:>7.3f}"
+                    f"{scores[f'eval/mae_{region}']:>8.3f}"
+                    f"{scores[f'eval/r2_{region}']:>8.3f}   {rows}")
+        run.log(f"fit {fit_s:.0f}s, predict {predict_s:.0f}s, "
+                f"GPU pic {gpu:.2f} Go")
+        run.done()
+    del solver, model
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return scores
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--submission", required=True,
@@ -99,95 +221,11 @@ def main():
     params = {k: parse_value(v) for k, v in
               (p.split("=", 1) for p in args.param)}
     name = args.name or submission.parent.name.replace("_", "-")
-
-    dataset = load_module(BENCHMARK / "datasets" / "bacterial_expression.py",
-                          "bacterial_expression")
-    data_home = BENCHMARK / "data"
-    dataset.get_data_path = (lambda key=None: (data_home / key).resolve()
-                             if key else data_home.resolve())
     module = load_module(submission, "submission")
-
-    with RunLogger(name) as run:
-        run.config({"submission": str(submission.relative_to(ROOT)),
-                    "mode": args.mode, "float32": args.float32,
-                    "layer_stats_interval": args.layer_every, **params})
-
-        run.section("donnees")
-        t = time.time()
-        dataset.pd.read_parquet, original = lean_read_parquet, \
-            dataset.pd.read_parquet
-        try:
-            data = dataset.Dataset.get_instance(mode=args.mode).get_data()
-        finally:
-            dataset.pd.read_parquet = original
-        test_sets = data.pop("test_sets")
-        train_df = data.pop("train_df")
-        if args.float32:
-            # Halves the float columns of the 69 M training rows. The only
-            # difference with the platform, where the RAM is 32 GB.
-            for column in ("readcount", "log_length_ratio",
-                           "log_size_factor"):
-                train_df[column] = train_df[column].astype(np.float32)
-        samples_df = data.pop("samples_df")
-        genomes_dir = data.pop("genomes_dir")
-        run.log(f"train {len(train_df):,} lignes | " + ", ".join(
-            f"{k} {len(v[1]):,}" for k, v in test_sets.items())
-            + f" | {time.time() - t:.0f}s, RAM {memory_gb():.1f} Go")
-
-        solver = module.Solver.get_instance(**params)
-        solver.set_objective(train_df=train_df, samples_df=samples_df,
-                             genomes_dir=genomes_dir, **data)
-        model = solver.model
-        model.log, model.metric, model.track = run.log, run.metric, run.track
-        if hasattr(model, "layer_stats") and args.layer_every > 0:
-            model.layer_stats = (lambda module: LayerStats(
-                module, every=args.layer_every))
-
-        run.section("entrainement")
-        t = time.time()
-        solver.run(None)
-        fit_s = time.time() - t
-        model = solver.get_result()["model"]
-        solver.train_df = None
-        train_df = None
-        run.log(f"fit {fit_s:.0f}s, RAM {memory_gb():.1f} Go")
-
-        run.section("evaluation")
-        scores = {}
-        t = time.time()
-        for region, (features, counts) in test_sets.items():
-            preds = model.predict(features, samples_df, genomes_dir)
-            mu, sigma = check_predictions(preds, len(counts))
-            scores[f"eval/nb_nll_{region}"] = nb_nll(counts, mu, sigma)
-            scores[f"eval/mae_{region}"] = log_mae(counts, mu)
-            scores[f"eval/r2_{region}"] = log_r2(counts, mu)
-        predict_s = time.time() - t
-        for metric in ("nb_nll", "mae", "r2"):
-            keys = [f"eval/{metric}_{r}" for r in CHALLENGE
-                    if f"eval/{metric}_{r}" in scores]
-            if keys:
-                scores[f"eval/{metric}_challenge"] = float(
-                    np.mean([scores[k] for k in keys]))
-        try:
-            import torch
-            gpu = torch.cuda.max_memory_allocated() / 1e9
-        except Exception:
-            gpu = float("nan")
-        run.metric(**scores, **{"time/fit_s": fit_s,
-                                "time/predict_s": predict_s,
-                                "memory/gpu_peak_gb": gpu})
-
-        run.log("region   NB-NLL     MAE      R2   lignes")
-        for region in REGIONS + ["challenge"]:
-            if f"eval/nb_nll_{region}" not in scores:
-                continue
-            rows = len(test_sets[region][1]) if region in test_sets else ""
-            run.log(f"{region:<9}{scores[f'eval/nb_nll_{region}']:>7.3f}"
-                    f"{scores[f'eval/mae_{region}']:>8.3f}"
-                    f"{scores[f'eval/r2_{region}']:>8.3f}   {rows}")
-        run.log(f"fit {fit_s:.0f}s, predict {predict_s:.0f}s, "
-                f"GPU pic {gpu:.2f} Go")
-        run.done()
+    data = load_data(args.mode, args.float32)
+    evaluate(module, submission, params, name, data, args.layer_every,
+             extra_config={"mode": args.mode, "float32": args.float32},
+             free_train=True)
 
 
 if __name__ == "__main__":

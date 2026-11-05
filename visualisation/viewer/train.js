@@ -5,9 +5,16 @@
 
 import { $, api, h, fmt, seriesColor, cssVar, store } from './common.js';
 
-const GROUP_ORDER = ['loss', 'best', 'général', 'throughput', 'compute', 'router', 'system'];
-const TILE_KEYS = ['loss/ce', 'loss', 'loss/val', 'best/loss/val', 'lr', 'grad_norm', 'throughput/tok_s', 'compute/cost_usd'];
+// Deux groupes de courbes superposees viennent en tete :
+//   surapprentissage : <p>train/<x> en pointilles avec <p>val/<x> et <p>val/<x>_*
+//                      en traits pleins, l'ecart entre les deux est le surapprentissage ;
+//   étapes           : <p>fit/<x> puis <p>refit/<x>, une seule courbe sur le meme axe.
+// Une metrique a un seul point (score final, temps, holdout) ne fait pas un graphique,
+// elle va dans le tableau « valeurs finales » en bas.
+const GROUP_ORDER = ['surapprentissage', 'étapes', 'loss', 'val', 'train', 'best', 'général', 'throughput', 'compute', 'router', 'system'];
+const TILE_KEYS = ['val/nb_nll', 'train/nb_nll', 'best/val_nb_nll', 'eval/nb_nll_challenge', 'loss/ce', 'loss', 'loss/val', 'best/loss/val', 'lr', 'grad_norm', 'throughput/tok_s', 'compute/cost_usd'];
 const MAX_RUNS = 8;
+const COMBO = 'combo:';
 
 const st = {
   experiments: [], runs: new Map(),
@@ -15,7 +22,8 @@ const st = {
   focus: null,
   keys: new Map(),           // runId -> [{key, n, step, last}]
   data: new Map(),           // runId -> Map(key -> {steps, values})
-  charts: new Map(),         // key -> {u, el, sig}
+  charts: new Map(),         // key ou combo:... -> {u, el, sig}
+  combos: new Map(),         // combo:... -> {title, group, members: [{key, label, dash, width}]}
   open: new Set(store('open-groups') || ['loss', 'général', 'best']),
   smooth: 0.6, logy: false, auto: true,
   timer: null, tick: 0,
@@ -136,6 +144,97 @@ function unionKeys() {
   return [...all.keys()].sort();
 }
 
+// nombre de points le plus grand parmi les runs selectionnes
+function pointsOf(key) {
+  let n = 0;
+  for (const id of st.slots.keys()) for (const k of st.keys.get(id) || []) if (k.key === key) n = Math.max(n, k.n);
+  return n;
+}
+
+// Courbes superposees, a partir des cles qui ont plus d'un point.
+// Le prefixe est fait de segments entiers (glm/, ...), jamais d'un bout de mot :
+// refit/nll ne doit pas passer pour re + fit/nll.
+function buildCombos(keys) {
+  const set = new Set(keys);
+  const combos = new Map();
+  for (const k of keys) {
+    const tv = k.match(/^((?:[^/]+\/)*)train\/(.+)$/);
+    if (tv) {
+      const [, pre, base] = tv;
+      const main = `${pre}val/${base}`;
+      const vals = keys.filter(x => x === main || x.startsWith(`${main}_`)).sort();
+      if (vals.length) {
+        combos.set(`${COMBO}${pre}tv:${base}`, {
+          group: 'surapprentissage', title: `${pre}${base} : train contre validation`,
+          members: [{ key: k, label: 'train', dash: [6, 4], width: 2 },
+            ...vals.map(v => ({ key: v, label: v === main ? 'val' : `val ${v.slice(main.length + 1)}`, width: v === main ? 2.5 : 1.4 }))],
+        });
+      }
+    }
+    const fr = k.match(/^((?:[^/]+\/)*)fit\/(.+)$/);
+    if (fr && set.has(`${fr[1]}refit/${fr[2]}`)) {
+      const [, pre, base] = fr;
+      combos.set(`${COMBO}${pre}stage:${base}`, {
+        group: 'étapes', title: `${pre}${base} : fit puis refit`,
+        members: [{ key: k, label: 'fit', width: 2 }, { key: `${pre}refit/${base}`, label: 'refit', width: 2, dash: [3, 2] }],
+      });
+    }
+  }
+  return combos;
+}
+
+// cles de donnees a charger pour une liste de graphiques (cles simples ou combos)
+function dataKeys(ids) {
+  return [...new Set(ids.flatMap(id => (st.combos.has(id) ? st.combos.get(id).members.map(m => m.key) : [id])))];
+}
+
+function seriesForCombo(combo) {
+  const multi = st.slots.size > 1;
+  const tables = [];
+  const series = [{ label: 'step', value: (u, v) => (v == null ? '–' : fmt.int(v)) }];
+  combo.members.forEach((m, mi) => {
+    for (const [id, slot] of st.slots.entries()) {
+      const d = st.data.get(id)?.get(m.key);
+      if (!d) continue;
+      const byStep = new Map();
+      d.steps.forEach((stp, i) => byStep.set(stp, d.values[i]));
+      const xs = [...byStep.keys()].sort((a, b) => a - b);
+      let ys = xs.map(x => byStep.get(x));
+      if (st.logy) ys = ys.map(v => (v != null && v > 0 ? v : null));
+      tables.push([xs, ys]);
+      // un seul run : une couleur par courbe. Plusieurs runs : la couleur du run, le trait dit la courbe
+      const color = multi ? seriesColor(slot) : seriesColor(mi);
+      const run = st.runs.get(id)?.name || id.slice(0, 8);
+      series.push({
+        label: multi ? `${run} · ${m.label}` : m.label, stroke: color, width: m.width || 2,
+        dash: m.dash, spanGaps: true, points: { show: xs.length <= 2 }, value: (u, v) => fmt.num(v),
+      });
+    }
+  });
+  if (!tables.length) return null;
+  const data = tables.length === 1 ? tables[0] : uPlot.join(tables);
+  return { data, series, raw: [], sig: series.map(x => x.label + x.stroke + (x.dash || '')).join('|') + st.logy };
+}
+
+// Tableau des metriques a un seul point : une ligne par cle, une colonne par run.
+function valuesTable(keys) {
+  const runs = [...st.slots.entries()];
+  const last = (id, key) => (st.keys.get(id) || []).find(k => k.key === key)?.last;
+  const head = h('tr', {}, h('th', {}, 'métrique'),
+    ...runs.map(([id, slot]) => h('th', {}, h('span', { class: 'sw', style: { background: seriesColor(slot) } }), st.runs.get(id)?.name || id.slice(0, 8))));
+  const rows = [];
+  let group = null;
+  for (const k of keys) {
+    const g = groupOf(k);
+    if (g !== group) {
+      group = g;
+      rows.push(h('tr', { class: 'grp' }, h('td', { colspan: runs.length + 1 }, g)));
+    }
+    rows.push(h('tr', {}, h('td', {}, k), ...runs.map(([id]) => h('td', { class: 'num' }, fmt.num(last(id, k), 4)))));
+  }
+  return h('table', { class: 'values' }, h('thead', {}, head), h('tbody', {}, rows));
+}
+
 // --- courbes -----------------------------------------------------------------------
 
 function ema(values, w) {
@@ -193,7 +292,7 @@ function seriesFor(key) {
 }
 
 function makeChart(key, card) {
-  const spec = seriesFor(key);
+  const spec = st.combos.has(key) ? seriesForCombo(st.combos.get(key)) : seriesFor(key);
   const holder = card.querySelector('.plot');
   const old = st.charts.get(key);
   if (!spec) { old?.u?.destroy(); st.charts.delete(key); holder.replaceChildren(h('p', { class: 'nodata' }, 'Pas de point')); return; }
@@ -243,13 +342,17 @@ function renderGroups() {
     return;
   }
   const q = $('#metric-filter').value.trim().toLowerCase();
-  const keys = unionKeys().filter(k => !q || k.toLowerCase().includes(q));
+  const all = unionKeys();
+  const curves = all.filter(k => pointsOf(k) > 1);
+  const points = all.filter(k => pointsOf(k) <= 1 && (!q || k.toLowerCase().includes(q)));
+  st.combos = buildCombos(curves);
   const groups = new Map();
-  for (const k of keys) {
-    const g = groupOf(k);
-    if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(k);
+  const add = (g, id) => { if (!groups.has(g)) groups.set(g, []); groups.get(g).push(id); };
+  for (const [id, c] of st.combos) {
+    if (!q || c.title.toLowerCase().includes(q) || c.members.some(m => m.key.toLowerCase().includes(q))) add(c.group, id);
   }
+  for (const k of curves) if (!q || k.toLowerCase().includes(q)) add(groupOf(k), k);
+  const keys = [...groups.values()].flat();
   const order = [...groups.keys()].sort((a, b) => {
     const ia = GROUP_ORDER.indexOf(a), ib = GROUP_ORDER.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
@@ -272,16 +375,29 @@ function renderGroups() {
     if (open) queueMicrotask(() => fillGroup(grid, list));
     return det;
   });
+  if (points.length) {
+    const g = 'valeurs finales';
+    const det = h('details', { open: !!q || st.open.has(g), 'data-group': g },
+      h('summary', {}, g, h('span', { class: 'muted' }, `${points.length} valeur${points.length > 1 ? 's' : ''} à un seul point`)),
+      valuesTable(points));
+    det.addEventListener('toggle', () => {
+      if (det.open) st.open.add(g); else st.open.delete(g);
+      store('open-groups', [...st.open]);
+    });
+    blocks.push(det);
+  }
   box.replaceChildren(...(blocks.length ? blocks : [h('p', { class: 'nodata' }, 'Aucune courbe ne correspond au filtre.')]));
 }
 
 async function fillGroup(grid, keys) {
   if (!grid.isConnected) return;
   const gen = (grid.gen = (grid.gen || 0) + 1);
-  const cards = keys.map(k => h('div', { class: 'chart' }, h('h4', {}, k), h('div', { class: 'plot', 'data-key': k })));
+  const title = k => (st.combos.has(k) ? st.combos.get(k).title : k);
+  const cards = keys.map(k => h('div', { class: 'chart' }, h('h4', {}, title(k)), h('div', { class: 'plot', 'data-key': k })));
   grid.replaceChildren(...cards);
   for (const k of keys) { st.charts.get(k)?.u?.destroy(); st.charts.delete(k); }
-  await Promise.all([...st.slots.keys()].map(id => ensureData(id, keys.filter(k => (st.keys.get(id) || []).some(x => x.key === k)))));
+  const needed = dataKeys(keys);
+  await Promise.all([...st.slots.keys()].map(id => ensureData(id, needed.filter(k => (st.keys.get(id) || []).some(x => x.key === k)))));
   // un remplissage plus recent du meme groupe a pris la main pendant le chargement
   if (grid.gen !== gen || !grid.isConnected) return;
   cards.forEach((card, i) => {
@@ -291,7 +407,7 @@ async function fillGroup(grid, keys) {
 }
 
 async function updateOpenCharts() {
-  const open = [...document.querySelectorAll('#groups details[open] .plot')].map(p => p.dataset.key);
+  const open = dataKeys([...document.querySelectorAll('#groups details[open] .plot')].map(p => p.dataset.key));
   const running = [...st.slots.keys()].filter(id => st.runs.get(id)?.status === 'RUNNING');
   if (!running.length || !open.length) return;
   await Promise.all(running.map(id => ensureData(id, open.filter(k => (st.keys.get(id) || []).some(x => x.key === k)))));
@@ -380,6 +496,13 @@ export function trainThemeChanged() {
 }
 
 export async function initTrain() {
+  // les groupes superposes s'ouvrent d'office une premiere fois, meme avec un ancien choix memorise
+  if (!store('open-groups-v2')) {
+    st.open.add('surapprentissage');
+    st.open.add('étapes');
+    store('open-groups', [...st.open]);
+    store('open-groups-v2', true);
+  }
   await loadRuns();
   const saved = (store('selected') || []).filter(id => st.runs.has(id)).slice(0, MAX_RUNS);
   saved.forEach((id, i) => st.slots.set(id, i));

@@ -1,0 +1,20 @@
+{
+  "submission": "submissions\\transformer\\submission.py",
+  "layer_stats_interval": 0,
+  "mode": "debug",
+  "suite": "modern",
+  "variant": "socle",
+  "sdpa": true,
+  "precision": "fp16",
+  "norm_place": "pre",
+  "norm": "rmsnorm",
+  "ffn": "swiglu",
+  "optimizer": "adamw",
+  "grad_clip": 1.0,
+  "schedule": "cosine",
+  "epochs": 1.0,
+  "refit_epochs": 0.25,
+  "max_minutes": 240.0,
+  "batch": 4096,
+  "eval_every": 20
+}

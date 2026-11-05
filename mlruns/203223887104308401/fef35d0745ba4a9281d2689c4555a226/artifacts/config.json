@@ -1,0 +1,10 @@
+{
+  "submission": "submissions\\transformer\\submission.py",
+  "mode": "debug",
+  "float32": true,
+  "layer_stats_interval": 20,
+  "epochs": 3,
+  "refit_epochs": 0.5,
+  "batch": 4096,
+  "eval_every": 20
+}
