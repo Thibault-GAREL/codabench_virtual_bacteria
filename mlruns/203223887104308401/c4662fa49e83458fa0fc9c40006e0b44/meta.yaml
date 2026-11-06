@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/c4662fa49e83458fa0fc9c40006e0b44/artifacts
+end_time: 1793924047512
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: c4662fa49e83458fa0fc9c40006e0b44
+run_name: tf-modern-gpt_init_run-01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1793923617427
+status: 3
+tags: []
+user_id: root

@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/17e1e597dfa74117a2fa5bffb99fa77b/artifacts
+end_time: 1793921775901
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: 17e1e597dfa74117a2fa5bffb99fa77b
+run_name: tf-modern-moe_run-01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1793921152407
+status: 3
+tags: []
+user_id: root

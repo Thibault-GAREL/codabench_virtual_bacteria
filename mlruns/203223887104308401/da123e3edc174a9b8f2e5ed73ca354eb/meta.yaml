@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/da123e3edc174a9b8f2e5ed73ca354eb/artifacts
+end_time: 1793923171039
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: da123e3edc174a9b8f2e5ed73ca354eb
+run_name: tf-modern-sandwich_run-01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1793922621609
+status: 3
+tags: []
+user_id: root

@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/42009ee31035424085153ee9bd3a51af/artifacts
+end_time: 1793915700005
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: 42009ee31035424085153ee9bd3a51af
+run_name: tf-speed-fp16_sdpa_b65k_run-01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1793915689610
+status: 4
+tags: []
+user_id: root

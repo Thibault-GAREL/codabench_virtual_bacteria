@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/460b029b2caa44c88d7828bdcf60aeba/artifacts
+end_time: 1793923616539
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: 460b029b2caa44c88d7828bdcf60aeba
+run_name: tf-modern-softcap_run-01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1793923171913
+status: 3
+tags: []
+user_id: root
