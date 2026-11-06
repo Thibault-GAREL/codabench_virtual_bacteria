@@ -23,6 +23,7 @@ import argparse
 import os
 import sys
 import time
+from dataclasses import fields
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +119,9 @@ def main():
     # gene and per run tables are built once (about 90 s on the train rows)
     os.environ["BACTERIA_KEEP_PREPARED"] = "1"
     module = ev.load_module(SUBMISSION, "submission")
+    # every variant starts from the 2017 defaults of TConfig, not from the
+    # Solver defaults, which are the submitted configuration (PRESET)
+    defaults = {f.name: f.default for f in fields(module.TConfig)}
     data = ev.load_data(args.mode)
     results = []
     for suite in args.suite.split(","):
@@ -129,7 +133,7 @@ def main():
                       if suite == "speed" else
                       {"epochs": args.epochs,
                        "refit_epochs": args.refit_epochs})
-            params = {**base, **delta, **budget,
+            params = {**defaults, **base, **delta, **budget,
                       "max_minutes": args.max_minutes, **extra}
             print(f"\n=== {suite} / {name}: {params}", flush=True)
             t = time.time()

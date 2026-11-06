@@ -1,0 +1,40 @@
+[08:36:08] === tf-submission-check_run-02 ===
+[08:36:08] projet   : D:\Loisir\Code_python\codabench_virtual_bacteria
+[08:36:08] python   : 3.12.1 | torch 2.5.1+cu121, cuda sur NVIDIA GeForce GTX 1660 Ti with Max-Q Design (6.0 Go)
+[08:36:08] git      : 1852a1c (main, modifie)
+[08:36:08] logs     : D:\Loisir\Code_python\codabench_virtual_bacteria\outputs\logs\tf-submission-check_run-02\run.log
+[08:36:09] mlflow   : D:\Loisir\Code_python\codabench_virtual_bacteria\mlruns (experience codabench_virtual_bacteria)
+[08:36:09] config   : submission=submissions\transformer\submission.py, layer_stats_interval=0, mode=debug, float32=True, max_minutes=0.08, batch=2048
+[08:36:09]            detail complet dans config.json
+[08:36:09] --- donnees ---
+[08:36:09] train 385,006 lignes | A 18,046, B 8,436, C 1,666, D 34 | RAM 0.6 Go
+[08:36:09] --- entrainement ---
+[08:36:09] gene features gene_features.npz: 4,256 of 4,256 genes, 39 signals, ESM 32 dimensions, 4,256 with a protein
+[08:36:09] 385,006 rows, 4,256 genes, 3,001 runs, 176 projects, 504 conditions, 10 run fields (125 values), 73 gene inputs (0s)
+[08:36:09] holdout rows: A 13,373, B 23,170, C 18,014, D 1,200, fit 329,249, RAM 0.7 GB
+[08:36:10] network: 21 tokens of 64, 2 layers, 635,162 parameters (100,012 in the blocks), GPU 0.01 GB, RAM 0.8 GB
+[08:36:11] fit: 329,249 rows, 483 steps of 2,048 (3 epoch), RAM 0.8 GB
+[08:36:19]   fit   0%|          | 1/483 ETA 1:04:52   train/batch_nll 38.6914  train/lr 9.500e-05  throughput/rows_s 1.714e+03  train/grad_norm nan  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[08:36:19] fit: time budget reached at step 1
+[08:36:26] fit: best checkpoint kept, step 0, val 17.1656
+[08:36:26] fit: 1 steps, 2,048 rows in 15s, 255 rows/s (7s of curves)
+[08:36:26] fit done (17s)
+[08:36:29] holdout rows: A_full 3,629, A_block 9,744, B_condition 6,794, B_project 8,012, B_new 8,364, C 18,014, D 1,200
+[08:36:29] holdout NB-NLL: A_full 8.367, A_block 8.706, B_condition 8.997, B_project 8.892, B_new 9.026, C 8.603
+[08:36:29] dispersion shifts: A_full -3.58, A_block -3.69, B_condition -3.65, B_project -3.19, B_new -3.20, C -3.75, D -3.75
+[08:36:29] refit: 385,006 rows, 47 steps of 2,048 (0.25 epoch), RAM 1.5 GB
+[08:36:29] refit: time budget reached at step 0
+[08:36:29] refit: 0 steps, 0 rows in 0s, 0 rows/s (0s of curves)
+[08:36:29] fit total 20s, RAM 1.5 GB
+[08:36:29] fit 20s, RAM 1.4 Go
+[08:36:29] --- evaluation ---
+[08:36:31] region   NB-NLL     MAE      R2   lignes
+[08:36:31] A          8.398   1.411   0.242   18046
+[08:36:31] B          9.986   1.762   0.029   8436
+[08:36:31] C          8.098   1.509   0.302   1666
+[08:36:31] D          8.847   1.228   0.438   34
+[08:36:31] challenge  8.828   1.560   0.191   
+[08:36:31] fit 20s, predict 1s, GPU pic 1.51 Go
+[08:36:31] --- termine en 00:23 ---
+[08:36:31] final    : train/batch_nll 38.6914  train/lr 9.500e-05  throughput/rows_s 1.714e+03  train/grad_norm nan  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656  holdout/nb_nll_A_full 8.3668  holdout/nb_nll_A_block 8.7057  holdout/nb_nll_B_condition 8.9967  holdout/nb_nll_B_project 8.8925  holdout/nb_nll_B_new 9.0257  holdout/nb_nll_C 8.6025  holdout/delta_A_full -3.5770  holdout/delta_A_block -3.6881  holdout/delta_B_condition -3.6480  holdout/delta_B_project -3.1856  holdout/delta_B_new -3.1982  holdout/delta_C -3.7498  holdout/delta_D -3.7498  best/val_nb_nll 17.1656  best/step 0.0000  eval/nb_nll_A 8.3983  eval/mae_A 1.4109  eval/r2_A 0.2424  eval/nb_nll_B 9.9862  eval/mae_B 1.7617  eval/r2_B 0.0288  eval/nb_nll_C 8.0985  eval/mae_C 1.5087  eval/r2_C 0.3020  eval/nb_nll_D 8.8471  eval/mae_D 1.2279  eval/r2_D 0.4379  eval/nb_nll_challenge 8.8277  eval/mae_challenge 1.5604  eval/r2_challenge 0.1911  time/fit_s 19.7249  time/predict_s 1.3643  memory/gpu_peak_gb 1.5102
+[08:36:31] courbes  : mlflow ui (depuis D:\Loisir\Code_python\codabench_virtual_bacteria)

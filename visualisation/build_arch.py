@@ -289,12 +289,23 @@ def describe_transformer(net, cfg, tables):
     body.append(node("Tête", "head", module="head",
                      info=["CLS → log μ, log σ", "à 0 au départ"]))
     transformer = node("Transformer", "stack", scale=2, children=body)
-    biases = node("Effets GLM additifs", "embed", module="bias", scale=2,
-                  info=["b0 + génome + gène + run + projet",
-                        "ρ0 + ρ gène", "masqués si jamais vus"],
-                  doc="Démarrés aux estimations de moments, comme le GLM : "
-                      "dès le premier step le modèle prédit comme un modèle "
-                      "additif, le transformer apprend le reste.")
+    if cfg.id_bias:
+        biases = node("Effets GLM additifs", "embed", module="bias", scale=2,
+                      info=["b0 + génome + gène + run + projet",
+                            "ρ0 + ρ gène", "masqués si jamais vus"],
+                      doc="Démarrés aux estimations de moments, comme le "
+                          "GLM : dès le premier step le modèle prédit comme "
+                          "un modèle additif, le transformer apprend le "
+                          "reste.")
+    else:
+        biases = node("Constantes b0 et ρ0", "embed", module="bias", scale=2,
+                      info=["niveau moyen et dispersion moyenne",
+                            "effets par niveau coupés (id_bias=false)"],
+                      doc="Les ablations du 2026-11-05 ont montré que les "
+                          "effets additifs libres par gène et par run "
+                          "gênent : sans eux, le score local passe de 7.567 "
+                          "à 7.505. Les embeddings portent seuls le niveau "
+                          "de chaque gène et de chaque run.")
     root = node("Transformer d'expression", "stack", layout="row", children=[
         node("Observation", "input", scale=3, shape="[B]",
              info=["un gène dans un run", "offset = profondeur + longueur"]),
@@ -320,7 +331,8 @@ def _meta(data):
 
 
 def build_transformer(sub, data, mode, params):
-    cfg = sub.TConfig(**params)
+    # the submitted configuration, unless --param says otherwise
+    cfg = sub.TConfig(**{**getattr(sub, "PRESET", {}), **params})
     model = sub.TransformerModel(_meta(data), cfg)
     gene, run, y, off = model.prepare(data["train_df"], data["samples_df"])
     ix = model.ix

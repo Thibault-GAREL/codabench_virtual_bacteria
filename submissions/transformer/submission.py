@@ -132,6 +132,17 @@ class TConfig:
     seed: int = 0
 
 
+# The configuration this file submits, on top of the 2017 defaults. The best
+# of the ablations of 2026-11-05 (A40, 1 epoch, local challenge NB-NLL 7.505
+# against 7.548 for the 2017 base and 8.090 for the GLM): the modern socle
+# without the additive id biases, in fp16 without the fused attention (the
+# fastest at 21 tokens). 3 epochs at most, the time budget decides on the T4.
+PRESET = {"norm_place": "pre", "norm": "rmsnorm", "ffn": "swiglu",
+          "optimizer": "adamw", "grad_clip": 1.0, "schedule": "cosine",
+          "precision": "fp16", "sdpa": False, "id_bias": False,
+          "epochs": 3.0}
+
+
 # --- data helpers, shared with the GLM and the hybrid ----------------------
 
 def _clean_name(value):
@@ -723,6 +734,18 @@ class _ExprTransformer(nn.Module):
 
 # --- the model ---------------------------------------------------------------
 
+def _schedule_step(step, total, elapsed, budget):
+    """Step the schedule reads: the real one, or the share of the time spent.
+
+    Equal to ``step`` when the run ends on its step count. Ahead of it when
+    the clock would stop the run first.
+    """
+    if budget <= 0:
+        return step
+    by_time = int(total * min(elapsed / budget, 1.0))
+    return min(max(step, by_time), total - 1)
+
+
 def _lr_factor(cfg, step, total):
     """Learning rate multiplier at ``step`` of ``total``."""
     warm = max(cfg.warmup_steps, 1)
@@ -978,7 +1001,12 @@ class TransformerModel:
                 pos = 0
             i = perm[pos:pos + cfg.batch]
             pos += cfg.batch
-            lr = cfg.lr * lr_scale * _lr_factor(cfg, step, steps)
+            # the schedule follows the steps or the clock, whichever is
+            # further: when the time budget binds (a slower GPU), the decay
+            # still ends at the deadline
+            lr = cfg.lr * lr_scale * _lr_factor(
+                cfg, _schedule_step(step, steps, time.time() - t_start,
+                                    deadline - t_start), steps)
             for group in opt.param_groups:
                 group["lr"] = lr
             if stats is not None:
@@ -1140,7 +1168,12 @@ class TransformerModel:
                                      log_r.cpu().numpy(), case)
         eta = log_r = None
 
-        # 5. Refit on every row, so the holdout levels get their embeddings
+        # 5. Refit on every row, so the holdout levels get their embeddings.
+        #    They start from the MASK token: a level the refit barely reaches
+        #    (0.25 epoch, or cut by the clock) is then still predicted as an
+        #    unseen one, never from an untrained random vector.
+        self.seen_fit = seen
+        self._start_from_mask(seen_dev)
         all_rows = np.ones(len(y), dtype=bool)
         if cfg.refit_epochs > 0:
             self._train(all_rows, cfg.refit_epochs, "refit",
@@ -1157,6 +1190,18 @@ class TransformerModel:
             torch.cuda.empty_cache()
         self.log(f"fit total {time.time() - t0:.0f}s, {_ram()}")
         return self
+
+    @torch.no_grad()
+    def _start_from_mask(self, seen_dev):
+        """Copies the MASK embedding into every level unseen in the fit."""
+        net = self.net
+        for emb, seen, mask in ((net.gene_emb, seen_dev["gene"], net.n_gene),
+                                (net.run_emb, seen_dev["run"], net.n_run),
+                                (net.prj_emb, seen_dev["prj"], net.n_prj),
+                                (net.cond_emb, seen_dev["cond"], net.n_cond)):
+            unseen = torch.nonzero(~seen).flatten()
+            if len(unseen):
+                emb.weight[unseen] = emb.weight[mask].clone()
 
     def _calibrate(self, y, eta, log_r, case):
         rng = np.random.default_rng(0)
@@ -1236,8 +1281,10 @@ class Solver(GeneCompetSolver):
     name = "transformer"
 
     # one benchopt parameter per field of TConfig, so the local harness and
-    # the ablations can set any of them (--param norm=rmsnorm)
-    parameters = {f.name: [f.default] for f in fields(TConfig)}
+    # the ablations can set any of them (--param norm=rmsnorm). The default
+    # values are the submitted configuration, PRESET on the 2017 defaults.
+    parameters = {f.name: [PRESET.get(f.name, f.default)]
+                  for f in fields(TConfig)}
 
     def get_model(self, meta):
         device = "cuda" if torch.cuda.is_available() else "cpu"

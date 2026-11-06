@@ -171,6 +171,27 @@ def test_schedules():
     assert T._lr_factor(wsd, 99, 100) == pytest.approx(0.1, abs=0.02)
 
 
+def test_schedule_follows_the_clock_when_time_binds():
+    # on time: the schedule reads the real step
+    assert T._schedule_step(10, 100, elapsed=5.0, budget=100.0) == 10
+    # half the time spent at step 10: the schedule is at step 50
+    assert T._schedule_step(10, 100, elapsed=50.0, budget=100.0) == 50
+    # never past the last step, even after the deadline
+    assert T._schedule_step(10, 100, elapsed=500.0, budget=100.0) == 99
+    c = replace(T.TConfig(), schedule="cosine", warmup_steps=5)
+    assert T._lr_factor(c, T._schedule_step(10, 100, 100.0, 100.0), 100) \
+        == pytest.approx(0.1, abs=1e-3)
+
+
+def test_solver_defaults_are_the_submitted_configuration():
+    from dataclasses import fields
+    for f in fields(T.TConfig):
+        expected = T.PRESET.get(f.name, f.default)
+        assert T.Solver.parameters[f.name] == [expected], f.name
+    # the 2017 defaults themselves are untouched, the ablations start there
+    assert T.TConfig().norm_place == "post" and T.TConfig().id_bias
+
+
 # --- the whole network ---------------------------------------------------------
 
 def tiny_tables(n_gene=6, n_run=5):
@@ -296,3 +317,18 @@ def test_fit_and_predict(precision):
     y = train["readcount"].values[:500]
     flat = nb_nll(y, np.full(500, y.mean()), np.full(500, 1.0))
     assert nb_nll(y, pred[:, 0], pred[:, 1]) < flat
+
+
+def test_holdout_levels_start_the_refit_from_mask():
+    genes, runs, train = synthetic(seed=1)
+    c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,
+                epochs=1, refit_epochs=0.0, eval_every=50)
+    model = T.TransformerModel({"feature_annotations": genes}, c)
+    model.log = lambda message: None
+    model.fit(train, runs, None)
+    w = model.net.gene_emb.weight.detach()
+    unseen = np.flatnonzero(~model.seen_fit["gene"])
+    assert len(unseen) > 0, "the holdout must hide some gene families"
+    # no refit: every gene the fit never saw still reads the MASK vector
+    for g in unseen:
+        torch.testing.assert_close(w[g], w[model.net.n_gene])

@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/30dff7d0933248a2ad6bf4a2f9ea05b6/artifacts
+end_time: 1793950853694
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: 30dff7d0933248a2ad6bf4a2f9ea05b6
+run_name: tf-submission-check_run-03
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1793950674024
+status: 4
+tags: []
+user_id: garel

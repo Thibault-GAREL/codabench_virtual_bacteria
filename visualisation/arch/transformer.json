@@ -3,13 +3,13 @@
  "title": "Transformer d'expression",
  "subtitle": "une ligne (gène, run) lue comme 21 tokens, données debug",
  "source": "submissions/transformer/submission.py",
- "generated": "2026-11-05T16:43:35",
+ "generated": "2026-11-06T08:45:50",
  "torch": "2.5.1+cu121",
  "symbols": {
   "B": 37,
   "T": 21
  },
- "params_total": 635054,
+ "params_total": 635162,
  "summary": [
   [
    "lignes d'entraînement",
@@ -41,23 +41,28 @@
   ],
   [
    "normalisation",
-   "layernorm, post"
+   "rmsnorm, pre"
   ],
   [
    "FFN",
-   "relu"
+   "swiglu"
   ],
   [
    "paramètres des blocs",
-   "99,968"
+   "100,012"
   ]
  ],
  "coverage": {
-  "covered": 635054,
-  "total": 635054,
+  "covered": 635162,
+  "total": 635162,
   "missing": [],
   "unknown_modules": [],
-  "never_called": []
+  "never_called": [
+   {
+    "module": "bias",
+    "count": 1
+   }
+  ]
  },
  "links": [],
  "root": {
@@ -248,9 +253,20 @@
           "kind": "block",
           "module": "blocks.0",
           "info": [
-           "norme post"
+           "norme pre"
           ],
           "children": [
+           {
+            "label": "rmsnorm",
+            "kind": "norm",
+            "module": "blocks.0.norm1",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/rmsnorm",
+            "params": 64,
+            "cls": "_Norm",
+            "calls": 1,
+            "in": "[B, T, 64]",
+            "out": "[B, T, 64]"
+           },
            {
             "label": "Attention",
             "kind": "attention",
@@ -335,11 +351,11 @@
             "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/n"
            },
            {
-            "label": "layernorm",
+            "label": "rmsnorm",
             "kind": "norm",
-            "module": "blocks.0.norm1",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/layernorm",
-            "params": 128,
+            "module": "blocks.0.norm2",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/rmsnorm-2",
+            "params": 64,
             "cls": "_Norm",
             "calls": 1,
             "in": "[B, T, 64]",
@@ -350,7 +366,7 @@
             "kind": "ffn",
             "module": "blocks.0.ffn",
             "info": [
-             "64 → 256 → 64"
+             "64 → 171 → 64"
             ],
             "children": [
              {
@@ -358,32 +374,32 @@
               "kind": "linear",
               "module": "blocks.0.ffn.up",
               "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn/mont-e",
-              "params": 16640,
+              "params": 22230,
               "cls": "Linear",
               "calls": 1,
               "in": "[B, T, 64]",
-              "out": "[B, T, 256]"
+              "out": "[B, T, 342]"
              },
              {
-              "label": "relu",
+              "label": "swiglu",
               "kind": "act",
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn/relu"
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn/swiglu"
              },
              {
               "label": "Descente",
               "kind": "linear",
               "module": "blocks.0.ffn.down",
               "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn/descente",
-              "params": 16448,
+              "params": 11008,
               "cls": "Linear",
               "calls": 1,
-              "in": "[B, T, 256]",
+              "in": "[B, T, 171]",
               "out": "[B, T, 64]"
              }
             ],
-            "badge": "relu",
+            "badge": "swiglu",
             "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn",
-            "params": 33088,
+            "params": 33238,
             "cls": "_FFN",
             "calls": 1,
             "in": "[B, T, 64]",
@@ -393,21 +409,10 @@
             "label": "+",
             "kind": "add",
             "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/n-2"
-           },
-           {
-            "label": "layernorm",
-            "kind": "norm",
-            "module": "blocks.0.norm2",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/layernorm-2",
-            "params": 128,
-            "cls": "_Norm",
-            "calls": 1,
-            "in": "[B, T, 64]",
-            "out": "[B, T, 64]"
            }
           ],
           "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1",
-          "params": 49984,
+          "params": 50006,
           "cls": "_Block",
           "calls": 1,
           "in": "[B, T, 64]",
@@ -418,9 +423,20 @@
           "kind": "block",
           "module": "blocks.1",
           "info": [
-           "norme post"
+           "norme pre"
           ],
           "children": [
+           {
+            "label": "rmsnorm",
+            "kind": "norm",
+            "module": "blocks.1.norm1",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/rmsnorm",
+            "params": 64,
+            "cls": "_Norm",
+            "calls": 1,
+            "in": "[B, T, 64]",
+            "out": "[B, T, 64]"
+           },
            {
             "label": "Attention",
             "kind": "attention",
@@ -505,11 +521,11 @@
             "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/n"
            },
            {
-            "label": "layernorm",
+            "label": "rmsnorm",
             "kind": "norm",
-            "module": "blocks.1.norm1",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/layernorm",
-            "params": 128,
+            "module": "blocks.1.norm2",
+            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/rmsnorm-2",
+            "params": 64,
             "cls": "_Norm",
             "calls": 1,
             "in": "[B, T, 64]",
@@ -520,7 +536,7 @@
             "kind": "ffn",
             "module": "blocks.1.ffn",
             "info": [
-             "64 → 256 → 64"
+             "64 → 171 → 64"
             ],
             "children": [
              {
@@ -528,32 +544,32 @@
               "kind": "linear",
               "module": "blocks.1.ffn.up",
               "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn/mont-e",
-              "params": 16640,
+              "params": 22230,
               "cls": "Linear",
               "calls": 1,
               "in": "[B, T, 64]",
-              "out": "[B, T, 256]"
+              "out": "[B, T, 342]"
              },
              {
-              "label": "relu",
+              "label": "swiglu",
               "kind": "act",
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn/relu"
+              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn/swiglu"
              },
              {
               "label": "Descente",
               "kind": "linear",
               "module": "blocks.1.ffn.down",
               "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn/descente",
-              "params": 16448,
+              "params": 11008,
               "cls": "Linear",
               "calls": 1,
-              "in": "[B, T, 256]",
+              "in": "[B, T, 171]",
               "out": "[B, T, 64]"
              }
             ],
-            "badge": "relu",
+            "badge": "swiglu",
             "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn",
-            "params": 33088,
+            "params": 33238,
             "cls": "_FFN",
             "calls": 1,
             "in": "[B, T, 64]",
@@ -563,21 +579,10 @@
             "label": "+",
             "kind": "add",
             "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/n-2"
-           },
-           {
-            "label": "layernorm",
-            "kind": "norm",
-            "module": "blocks.1.norm2",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/layernorm-2",
-            "params": 128,
-            "cls": "_Norm",
-            "calls": 1,
-            "in": "[B, T, 64]",
-            "out": "[B, T, 64]"
            }
           ],
           "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2",
-          "params": 49984,
+          "params": 50006,
           "cls": "_Block",
           "calls": 1,
           "in": "[B, T, 64]",
@@ -585,6 +590,17 @@
          }
         ],
         "id": "transformer-d-expression/branches/transformer/blocs-2"
+       },
+       {
+        "label": "Norme finale",
+        "kind": "norm",
+        "module": "final_norm",
+        "id": "transformer-d-expression/branches/transformer/norme-finale",
+        "params": 64,
+        "cls": "_Norm",
+        "calls": 1,
+        "in": "[B, 64]",
+        "out": "[B, 64]"
        },
        {
         "label": "Tête",
@@ -606,22 +622,19 @@
       "id": "transformer-d-expression/branches/transformer"
      },
      {
-      "label": "Effets GLM additifs",
+      "label": "Constantes b0 et ρ0",
       "kind": "embed",
       "module": "bias",
       "info": [
-       "b0 + génome + gène + run + projet",
-       "ρ0 + ρ gène",
-       "masqués si jamais vus"
+       "niveau moyen et dispersion moyenne",
+       "effets par niveau coupés (id_bias=false)"
       ],
-      "doc": "Démarrés aux estimations de moments, comme le GLM : dès le premier step le modèle prédit comme un modèle additif, le transformer apprend le reste.",
+      "doc": "Les ablations du 2026-11-05 ont montré que les effets additifs libres par gène et par run gênent : sans eux, le score local passe de 7.567 à 7.505. Les embeddings portent seuls le niveau de chaque gène et de chaque run.",
       "scale": 2,
-      "id": "transformer-d-expression/branches/effets-glm-additifs",
+      "id": "transformer-d-expression/branches/constantes-b0-et-0",
       "params": 11692,
       "cls": "_Biases",
-      "calls": 1,
-      "in": "[B]",
-      "out": "[B]"
+      "calls": 0
      }
     ],
     "layout": "row",
