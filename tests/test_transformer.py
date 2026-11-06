@@ -183,6 +183,13 @@ def test_schedule_follows_the_clock_when_time_binds():
         == pytest.approx(0.1, abs=1e-3)
 
 
+def test_every_preset_is_a_valid_configuration():
+    assert T.SUBMITTED in T.PRESETS and T.PRESET is T.PRESETS[T.SUBMITTED]
+    for name, preset in T.PRESETS.items():
+        c = T.TConfig(**preset)
+        assert c.mixer in ("attention", "mlp"), name
+
+
 def test_solver_defaults_are_the_submitted_configuration():
     from dataclasses import fields
     for f in fields(T.TConfig):

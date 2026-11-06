@@ -182,9 +182,13 @@ def main():
     results = []
     for suite in args.suite.split(","):
         base, variants = SUITES[suite]
-        # a base marked _on_preset is laid over the submitted configuration
+        # a base marked _on_preset is laid over the transformer socle, the
+        # submitted configuration when the mu, t4 and mlp suites ran (the
+        # submitted one has moved on since, the suites must not)
         if base.get("_on_preset"):
-            base = {**module.PRESET,
+            socle = getattr(module, "PRESETS", {}).get("transformer",
+                                                       module.PRESET)
+            base = {**socle,
                     **{k: v for k, v in base.items() if k != "_on_preset"}}
         for name, delta in variants.items():
             if only and name not in only:

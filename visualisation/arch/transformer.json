@@ -3,13 +3,13 @@
  "title": "Transformer d'expression",
  "subtitle": "une ligne (gène, run) lue comme 21 tokens, données debug",
  "source": "submissions/transformer/submission.py",
- "generated": "2026-11-06T15:39:08",
+ "generated": "2026-11-06T19:54:09",
  "torch": "2.5.1+cu121",
  "symbols": {
   "B": 37,
   "T": 21
  },
- "params_total": 635162,
+ "params_total": 3360090,
  "summary": [
   [
    "lignes d'entraînement",
@@ -49,12 +49,12 @@
   ],
   [
    "paramètres des blocs",
-   "100,012"
+   "0"
   ]
  ],
  "coverage": {
-  "covered": 635162,
-  "total": 635162,
+  "covered": 3360090,
+  "total": 3360090,
   "missing": [],
   "unknown_modules": [],
   "never_called": [
@@ -245,351 +245,200 @@
         "id": "transformer-d-expression/branches/transformer/tokens"
        },
        {
-        "label": "Blocs ×2",
+        "label": "MLP sans attention",
         "kind": "stack",
+        "module": "mixer",
+        "info": [
+         "2 blocs de 512"
+        ],
         "children": [
          {
-          "label": "Bloc 1",
-          "kind": "block",
-          "module": "blocks.0",
+          "label": "Aplatir + Linear",
+          "kind": "linear",
+          "module": "mixer.inp",
           "info": [
-           "norme pre"
+           "21 × 64 → 512"
           ],
-          "children": [
-           {
-            "label": "rmsnorm",
-            "kind": "norm",
-            "module": "blocks.0.norm1",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/rmsnorm",
-            "params": 64,
-            "cls": "_Norm",
-            "calls": 1,
-            "in": "[B, T, 64]",
-            "out": "[B, T, 64]"
-           },
-           {
-            "label": "Attention",
-            "kind": "attention",
-            "module": "blocks.0.attn",
-            "info": [
-             "4 têtes, 4 KV"
-            ],
-            "children": [
-             {
-              "label": "Q",
-              "kind": "linear",
-              "module": "blocks.0.attn.q",
-              "info": [
-               "64 → 4 têtes × 16"
-              ],
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention/q",
-              "params": 4160,
-              "cls": "Linear",
-              "calls": 1,
-              "in": "[B, T, 64]",
-              "out": "[B, T, 64]"
-             },
-             {
-              "label": "K",
-              "kind": "linear",
-              "module": "blocks.0.attn.k",
-              "info": [
-               "64 → 4 × 16"
-              ],
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention/k",
-              "params": 4160,
-              "cls": "Linear",
-              "calls": 1,
-              "in": "[B, T, 64]",
-              "out": "[B, T, 64]"
-             },
-             {
-              "label": "V",
-              "kind": "linear",
-              "module": "blocks.0.attn.v",
-              "info": [
-               "64 → 4 × 16"
-              ],
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention/v",
-              "params": 4160,
-              "cls": "Linear",
-              "calls": 1,
-              "in": "[B, T, 64]",
-              "out": "[B, T, 64]"
-             },
-             {
-              "label": "softmax(QKᵀ/√d) V",
-              "kind": "softmax",
-              "info": [
-               "tous les tokens se voient"
-              ],
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention/softmax-qk-d-v"
-             },
-             {
-              "label": "Sortie",
-              "kind": "linear",
-              "module": "blocks.0.attn.out",
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention/sortie",
-              "params": 4160,
-              "cls": "Linear",
-              "calls": 1,
-              "in": "[B, T, 64]",
-              "out": "[B, T, 64]"
-             }
-            ],
-            "badge": "MHA",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/attention",
-            "params": 16640,
-            "cls": "_Attention",
-            "calls": 1,
-            "in": "[B, T, 64]",
-            "out": "[B, T, 64]"
-           },
-           {
-            "label": "+",
-            "kind": "add",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/n"
-           },
-           {
-            "label": "rmsnorm",
-            "kind": "norm",
-            "module": "blocks.0.norm2",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/rmsnorm-2",
-            "params": 64,
-            "cls": "_Norm",
-            "calls": 1,
-            "in": "[B, T, 64]",
-            "out": "[B, T, 64]"
-           },
-           {
-            "label": "FFN",
-            "kind": "ffn",
-            "module": "blocks.0.ffn",
-            "info": [
-             "64 → 171 → 64"
-            ],
-            "children": [
-             {
-              "label": "Montée",
-              "kind": "linear",
-              "module": "blocks.0.ffn.up",
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn/mont-e",
-              "params": 22230,
-              "cls": "Linear",
-              "calls": 1,
-              "in": "[B, T, 64]",
-              "out": "[B, T, 342]"
-             },
-             {
-              "label": "swiglu",
-              "kind": "act",
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn/swiglu"
-             },
-             {
-              "label": "Descente",
-              "kind": "linear",
-              "module": "blocks.0.ffn.down",
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn/descente",
-              "params": 11008,
-              "cls": "Linear",
-              "calls": 1,
-              "in": "[B, T, 171]",
-              "out": "[B, T, 64]"
-             }
-            ],
-            "badge": "swiglu",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/ffn",
-            "params": 33238,
-            "cls": "_FFN",
-            "calls": 1,
-            "in": "[B, T, 64]",
-            "out": "[B, T, 64]"
-           },
-           {
-            "label": "+",
-            "kind": "add",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1/n-2"
-           }
-          ],
-          "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-1",
-          "params": 50006,
-          "cls": "_Block",
+          "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/aplatir-linear",
+          "params": 688640,
+          "cls": "Linear",
           "calls": 1,
-          "in": "[B, T, 64]",
-          "out": "[B, T, 64]"
+          "in": "[B, 1344]",
+          "out": "[B, 512]"
          },
          {
-          "label": "Bloc 2",
+          "label": "Bloc MLP 1",
           "kind": "block",
-          "module": "blocks.1",
-          "info": [
-           "norme pre"
-          ],
+          "module": "mixer.blocks.0",
           "children": [
            {
             "label": "rmsnorm",
             "kind": "norm",
-            "module": "blocks.1.norm1",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/rmsnorm",
-            "params": 64,
+            "module": "mixer.blocks.0.norm",
+            "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-1/rmsnorm",
+            "params": 512,
             "cls": "_Norm",
             "calls": 1,
-            "in": "[B, T, 64]",
-            "out": "[B, T, 64]"
-           },
-           {
-            "label": "Attention",
-            "kind": "attention",
-            "module": "blocks.1.attn",
-            "info": [
-             "4 têtes, 4 KV"
-            ],
-            "children": [
-             {
-              "label": "Q",
-              "kind": "linear",
-              "module": "blocks.1.attn.q",
-              "info": [
-               "64 → 4 têtes × 16"
-              ],
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention/q",
-              "params": 4160,
-              "cls": "Linear",
-              "calls": 1,
-              "in": "[B, T, 64]",
-              "out": "[B, T, 64]"
-             },
-             {
-              "label": "K",
-              "kind": "linear",
-              "module": "blocks.1.attn.k",
-              "info": [
-               "64 → 4 × 16"
-              ],
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention/k",
-              "params": 4160,
-              "cls": "Linear",
-              "calls": 1,
-              "in": "[B, T, 64]",
-              "out": "[B, T, 64]"
-             },
-             {
-              "label": "V",
-              "kind": "linear",
-              "module": "blocks.1.attn.v",
-              "info": [
-               "64 → 4 × 16"
-              ],
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention/v",
-              "params": 4160,
-              "cls": "Linear",
-              "calls": 1,
-              "in": "[B, T, 64]",
-              "out": "[B, T, 64]"
-             },
-             {
-              "label": "softmax(QKᵀ/√d) V",
-              "kind": "softmax",
-              "info": [
-               "tous les tokens se voient"
-              ],
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention/softmax-qk-d-v"
-             },
-             {
-              "label": "Sortie",
-              "kind": "linear",
-              "module": "blocks.1.attn.out",
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention/sortie",
-              "params": 4160,
-              "cls": "Linear",
-              "calls": 1,
-              "in": "[B, T, 64]",
-              "out": "[B, T, 64]"
-             }
-            ],
-            "badge": "MHA",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/attention",
-            "params": 16640,
-            "cls": "_Attention",
-            "calls": 1,
-            "in": "[B, T, 64]",
-            "out": "[B, T, 64]"
-           },
-           {
-            "label": "+",
-            "kind": "add",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/n"
-           },
-           {
-            "label": "rmsnorm",
-            "kind": "norm",
-            "module": "blocks.1.norm2",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/rmsnorm-2",
-            "params": 64,
-            "cls": "_Norm",
-            "calls": 1,
-            "in": "[B, T, 64]",
-            "out": "[B, T, 64]"
+            "in": "[B, 512]",
+            "out": "[B, 512]"
            },
            {
             "label": "FFN",
             "kind": "ffn",
-            "module": "blocks.1.ffn",
-            "info": [
-             "64 → 171 → 64"
-            ],
+            "module": "mixer.blocks.0.ffn",
             "children": [
              {
               "label": "Montée",
               "kind": "linear",
-              "module": "blocks.1.ffn.up",
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn/mont-e",
-              "params": 22230,
+              "module": "mixer.blocks.0.ffn.up",
+              "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-1/ffn/mont-e",
+              "params": 700758,
               "cls": "Linear",
               "calls": 1,
-              "in": "[B, T, 64]",
-              "out": "[B, T, 342]"
+              "in": "[B, 512]",
+              "out": "[B, 1366]"
              },
              {
               "label": "swiglu",
               "kind": "act",
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn/swiglu"
+              "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-1/ffn/swiglu"
              },
              {
               "label": "Descente",
               "kind": "linear",
-              "module": "blocks.1.ffn.down",
-              "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn/descente",
-              "params": 11008,
+              "module": "mixer.blocks.0.ffn.down",
+              "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-1/ffn/descente",
+              "params": 350208,
               "cls": "Linear",
               "calls": 1,
-              "in": "[B, T, 171]",
-              "out": "[B, T, 64]"
+              "in": "[B, 683]",
+              "out": "[B, 512]"
              }
             ],
             "badge": "swiglu",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/ffn",
-            "params": 33238,
+            "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-1/ffn",
+            "params": 1050966,
             "cls": "_FFN",
             "calls": 1,
-            "in": "[B, T, 64]",
-            "out": "[B, T, 64]"
+            "in": "[B, 512]",
+            "out": "[B, 512]"
            },
            {
             "label": "+",
             "kind": "add",
-            "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2/n-2"
+            "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-1/n"
            }
           ],
-          "id": "transformer-d-expression/branches/transformer/blocs-2/bloc-2",
-          "params": 50006,
-          "cls": "_Block",
+          "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-1",
+          "params": 1051478,
+          "cls": "_MLPBlock",
           "calls": 1,
-          "in": "[B, T, 64]",
-          "out": "[B, T, 64]"
+          "in": "[B, 512]",
+          "out": "[B, 512]"
+         },
+         {
+          "label": "Bloc MLP 2",
+          "kind": "block",
+          "module": "mixer.blocks.1",
+          "children": [
+           {
+            "label": "rmsnorm",
+            "kind": "norm",
+            "module": "mixer.blocks.1.norm",
+            "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-2/rmsnorm",
+            "params": 512,
+            "cls": "_Norm",
+            "calls": 1,
+            "in": "[B, 512]",
+            "out": "[B, 512]"
+           },
+           {
+            "label": "FFN",
+            "kind": "ffn",
+            "module": "mixer.blocks.1.ffn",
+            "children": [
+             {
+              "label": "Montée",
+              "kind": "linear",
+              "module": "mixer.blocks.1.ffn.up",
+              "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-2/ffn/mont-e",
+              "params": 700758,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, 512]",
+              "out": "[B, 1366]"
+             },
+             {
+              "label": "swiglu",
+              "kind": "act",
+              "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-2/ffn/swiglu"
+             },
+             {
+              "label": "Descente",
+              "kind": "linear",
+              "module": "mixer.blocks.1.ffn.down",
+              "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-2/ffn/descente",
+              "params": 350208,
+              "cls": "Linear",
+              "calls": 1,
+              "in": "[B, 683]",
+              "out": "[B, 512]"
+             }
+            ],
+            "badge": "swiglu",
+            "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-2/ffn",
+            "params": 1050966,
+            "cls": "_FFN",
+            "calls": 1,
+            "in": "[B, 512]",
+            "out": "[B, 512]"
+           },
+           {
+            "label": "+",
+            "kind": "add",
+            "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-2/n"
+           }
+          ],
+          "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/bloc-mlp-2",
+          "params": 1051478,
+          "cls": "_MLPBlock",
+          "calls": 1,
+          "in": "[B, 512]",
+          "out": "[B, 512]"
+         },
+         {
+          "label": "rmsnorm",
+          "kind": "norm",
+          "module": "mixer.norm",
+          "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/rmsnorm",
+          "params": 512,
+          "cls": "_Norm",
+          "calls": 1,
+          "in": "[B, 512]",
+          "out": "[B, 512]"
+         },
+         {
+          "label": "Linear",
+          "kind": "linear",
+          "module": "mixer.out",
+          "info": [
+           "512 → 64"
+          ],
+          "id": "transformer-d-expression/branches/transformer/mlp-sans-attention/linear",
+          "params": 32832,
+          "cls": "Linear",
+          "calls": 1,
+          "in": "[B, 512]",
+          "out": "[B, 64]"
          }
         ],
-        "id": "transformer-d-expression/branches/transformer/blocs-2"
+        "doc": "Les mêmes tokens, aplatis : aucune attention. Sert à mesurer ce que l'attention apporte.",
+        "id": "transformer-d-expression/branches/transformer/mlp-sans-attention",
+        "params": 2824940,
+        "cls": "_MLPMixer",
+        "calls": 1,
+        "in": "[B, T, 64]",
+        "out": "[B, 64]"
        },
        {
         "label": "Norme finale",

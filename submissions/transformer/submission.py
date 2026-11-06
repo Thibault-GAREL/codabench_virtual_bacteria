@@ -158,18 +158,31 @@ class TConfig:
     plr_dim: int = 8               # size of each gene signal embedding (plr)
 
 
-# The configuration this file submits, on top of the 2017 defaults.
-# - 2026-11-05 ablations (A40, 1 epoch): the modern socle without the
-#   per-level additive effects, in fp16 without the fused attention (the
-#   fastest at 21 tokens). Platform score 7.11 with one model.
-# - 2026-11-06 t4 suite (A40 at the T4 hour): two seeds sharing the hour,
-#   mixed by moments, local challenge NB-NLL 7.505 against 7.584 for one
-#   model, the only gain beyond the noise. 3 epochs at most per model, the
-#   time budget decides on the T4 (about 1.2 each).
-PRESET = {"norm_place": "pre", "norm": "rmsnorm", "ffn": "swiglu",
+# The configurations this file can submit, on top of the 2017 defaults, each
+# measured at the T4 hour of the platform (local challenge NB-NLL, and the
+# platform score once submitted). PRESET is the one the Solver uses, and
+# tools/build_submission_zip.py builds the zip of any of them by changing
+# the SUBMITTED line alone.
+_SOCLE = {"norm_place": "pre", "norm": "rmsnorm", "ffn": "swiglu",
           "optimizer": "adamw", "grad_clip": 1.0, "schedule": "cosine",
-          "precision": "fp16", "sdpa": False, "id_bias": False,
-          "epochs": 3.0, "n_models": 2}
+          "precision": "fp16", "sdpa": False, "id_bias": False}
+PRESETS = {
+    # 2026-11-05: the modern socle without the per-level effects, in fp16
+    # without the fused attention. Platform 7.11.
+    "transformer": {**_SOCLE, "epochs": 3.0},
+    # 2026-11-06 t4 suite: two transformers sharing the hour, mixed by
+    # moments. Local 7.505, platform 7.03.
+    "transformer_2seeds": {**_SOCLE, "epochs": 3.0, "n_models": 2},
+    # 2026-11-06 mlp suite: three attention-free MLP 2x512 with dropout 0.1
+    # sharing the hour (about 2 epochs each). Local 7.456, the best so far.
+    "mlp_3seeds": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
+                   "n_models": 3},
+    # same suite: three wider MLP 2x1024 without dropout. Local 7.486.
+    "mlp_3seeds_1024": {**_SOCLE, "mixer": "mlp", "mlp_hidden": 1024,
+                        "epochs": 8.0, "n_models": 3},
+}
+SUBMITTED = "mlp_3seeds"
+PRESET = PRESETS[SUBMITTED]
 
 
 # --- data helpers, shared with the GLM and the hybrid ----------------------
