@@ -6,8 +6,9 @@ one forward on a few rows, and describes the diagram.
 
 - ``hybrid``: the gene tower, the GLM effect tables and the run tower, side
   by side, then the interaction, log mu, log sigma and the NB loss.
-- ``transformer``: the tokens of a row, the blocks, the head and the additive
-  GLM effects, then log mu, log sigma and the NB loss.
+- ``transformer``: the tokens of a row, the blocks (or the mlp mixer), the
+  head and the per-level additive effects, then log mu, log sigma and the NB
+  loss.
 
     python visualisation/build_arch.py                       # both, debug data
     python visualisation/build_arch.py --model transformer --param norm_place=pre
@@ -287,20 +288,47 @@ def describe_transformer(net, cfg, tables):
                   children=[sources, node("Concat", "concat"),
                             node("CLS + slots", "pos", module="slots",
                                  info=["un embedding par champ"])])
-    body = [tokens, node(f"Blocs ×{cfg.n_layers}", "stack", children=blocks)]
+    if cfg.mixer == "mlp":
+        kids = [node("Aplatir + Linear", "linear", module="mixer.inp",
+                     info=[f"{net.n_tokens} × {d} → {cfg.mlp_hidden}"])]
+        for i in range(cfg.n_layers):
+            kids.append(node(f"Bloc MLP {i + 1}", "block",
+                             module=f"mixer.blocks.{i}", children=[
+                node(cfg.norm, "norm", module=f"mixer.blocks.{i}.norm"),
+                node("FFN", "ffn", module=f"mixer.blocks.{i}.ffn",
+                     badge=cfg.ffn, children=[
+                    node("Montée", "linear",
+                         module=f"mixer.blocks.{i}.ffn.up"),
+                    node(cfg.ffn, "act"),
+                    node("Descente", "linear",
+                         module=f"mixer.blocks.{i}.ffn.down")]),
+                node("+", "add")]))
+        kids += [node(cfg.norm, "norm", module="mixer.norm"),
+                 node("Linear", "linear", module="mixer.out",
+                      info=[f"{cfg.mlp_hidden} → {d}"])]
+        mixer = node("MLP sans attention", "stack", module="mixer",
+                     info=[f"{cfg.n_layers} blocs de {cfg.mlp_hidden}"],
+                     doc="Les mêmes tokens, aplatis : aucune attention. "
+                         "Sert à mesurer ce que l'attention apporte.",
+                     children=kids)
+        body = [tokens, mixer]
+    else:
+        body = [tokens, node(f"Blocs ×{cfg.n_layers}", "stack",
+                             children=blocks)]
     if cfg.norm_place != "post":
         body.append(node("Norme finale", "norm", module="final_norm"))
     body.append(node("Tête", "head", module="head",
                      info=["CLS → log μ, log σ", "à 0 au départ"]))
     transformer = node("Transformer", "stack", scale=2, children=body)
     if cfg.id_bias:
-        biases = node("Effets GLM additifs", "embed", module="bias", scale=2,
+        biases = node("Effets additifs par niveau", "embed", module="bias",
+                      scale=2,
                       info=["b0 + génome + gène + run + projet",
                             "ρ0 + ρ gène", "masqués si jamais vus"],
-                      doc="Démarrés aux estimations de moments, comme le "
-                          "GLM : dès le premier step le modèle prédit comme "
-                          "un modèle additif, le transformer apprend le "
-                          "reste.")
+                      doc="Une valeur libre par niveau, apprise dans le "
+                          "réseau et démarrée aux estimations de moments. "
+                          "Ce n'est pas un GLM séparé : le transformer "
+                          "apprend ces effets avec le reste.")
     else:
         biases = node("Constantes b0 et ρ0", "embed", module="bias", scale=2,
                       info=["niveau moyen et dispersion moyenne",

@@ -3,7 +3,7 @@
  "title": "Transformer d'expression",
  "subtitle": "une ligne (gène, run) lue comme 21 tokens, données debug",
  "source": "submissions/transformer/submission.py",
- "generated": "2026-11-06T10:06:43",
+ "generated": "2026-11-06T10:56:44",
  "torch": "2.5.1+cu121",
  "symbols": {
   "B": 37,

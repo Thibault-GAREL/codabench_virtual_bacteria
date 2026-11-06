@@ -378,9 +378,36 @@ def test_glm_token_adds_two_tokens():
     assert glm_net("token").n_tokens == glm_net("off").n_tokens + 2
 
 
+def test_out_scale_multiplies_the_head_output():
+    torch.manual_seed(0)
+    net = T._ExprTransformer(cfg(id_bias=False), tiny_tables(),
+                             tiny_bias()).eval()
+    with torch.no_grad():
+        net.head.weight.normal_()
+    g, r = torch.tensor([0, 3]), torch.tensor([1, 4])
+    plain, plain_r, _ = net(g, r, *flags(2))
+    net.head_scale.copy_(torch.tensor([2.0, 1.0]))
+    scaled, scaled_r, _ = net(g, r, *flags(2))
+    b0 = float(net.bias.b0)
+    torch.testing.assert_close(scaled - b0, 2.0 * (plain - b0))
+    torch.testing.assert_close(scaled_r, plain_r)
+
+
+def test_mlp_mixer_has_no_attention():
+    net = T._ExprTransformer(cfg(mixer="mlp", n_layers=2, mlp_hidden=48),
+                             tiny_tables(), tiny_bias())
+    names = [n for n, _ in net.named_modules()]
+    assert not any("attn" in n for n in names)
+    assert len(net.blocks) == 0 and len(net.mixer.blocks) == 2
+    eta, log_r, _ = net(torch.tensor([0, 2]), torch.tensor([1, 3]), *flags(2))
+    (eta.sum() + log_r.sum()).backward()
+    assert net.mixer.inp.weight.grad is not None
+
+
 @pytest.mark.parametrize("variant", [
     {"glm_eta": "offset"}, {"glm_eta": "token"}, {"n_models": 2},
-    {"id_bias": True, "bias_prior": 1.0}])
+    {"id_bias": True, "bias_prior": 1.0}, {"out_scale": True},
+    {"mixer": "mlp", "mlp_hidden": 64}])
 def test_mu_variants_fit_and_predict(variant):
     genes, runs, train = synthetic(seed=2)
     c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,

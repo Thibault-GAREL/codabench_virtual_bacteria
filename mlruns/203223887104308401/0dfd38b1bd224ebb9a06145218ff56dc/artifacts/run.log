@@ -1,0 +1,53 @@
+[11:00:48] === tf-t4-glm_token_run-01 ===
+[11:00:48] projet   : D:\Loisir\Code_python\codabench_virtual_bacteria
+[11:00:48] python   : 3.12.1 | torch 2.5.1+cu121, cuda sur NVIDIA GeForce GTX 1660 Ti with Max-Q Design (6.0 Go)
+[11:00:48] git      : 43be546 (main, modifie)
+[11:00:48] logs     : D:\Loisir\Code_python\codabench_virtual_bacteria\outputs\logs\tf-t4-glm_token_run-01\run.log
+[11:00:48] mlflow   : D:\Loisir\Code_python\codabench_virtual_bacteria\mlruns (experience codabench_virtual_bacteria)
+[11:00:48] config   : submission=submissions\transformer\submission.py, layer_stats_interval=0, mode=debug, suite=t4, variant=glm_token, d_model=64 ...
+[11:00:48]            detail complet dans config.json
+[11:00:48] --- donnees ---
+[11:00:48] train 385,006 lignes | A 18,046, B 8,436, C 1,666, D 34 | RAM 1.5 Go
+[11:00:48] --- entrainement ---
+[11:00:48] prepared tables of the previous fit reused
+[11:00:48] holdout rows: A 13,373, B 23,170, C 18,014, D 1,200, fit 329,249, RAM 1.5 GB
+[11:00:49] glm fit: 329,249 rows, 150 steps, NLL without lgamma(y+1) -18905.0137 to -18909.6777 (1s)
+[11:00:49] network: 23 tokens of 64, 2 attention layers, 635,674 parameters (100,012 in the blocks), GPU 0.03 GB, RAM 1.5 GB
+[11:00:49] fit: 329,249 rows, 81 steps of 4,096 (1 epoch), RAM 1.5 GB
+[11:00:55]   fit   1%|          | 1/81 ETA 08:16   train/batch_nll 35.6191  train/lr 5.000e-06  throughput/rows_s 8.986e+03  train/grad_norm nan  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:00:57]   fit   6%|#         | 5/81 ETA 02:01   train/batch_nll 35.6191  train/lr 5.000e-06  throughput/rows_s 8.986e+03  train/grad_norm nan  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:00:59]   fit  11%|#         | 9/81 ETA 01:18   train/batch_nll 35.6191  train/lr 5.000e-06  throughput/rows_s 8.986e+03  train/grad_norm nan  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:01]   fit  16%|##        | 13/81 ETA 01:01   train/batch_nll 37.8125  train/lr 1.300e-04  throughput/rows_s 8.937e+03  train/grad_norm 327.9511  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:03]   fit  22%|##        | 18/81 ETA 00:49   train/batch_nll 37.8125  train/lr 1.300e-04  throughput/rows_s 8.937e+03  train/grad_norm 327.9511  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:05]   fit  27%|###       | 22/81 ETA 00:42   train/batch_nll 31.6504  train/lr 1.900e-04  throughput/rows_s 8.896e+03  train/grad_norm 281.6312  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:07]   fit  32%|###       | 26/81 ETA 00:37   train/batch_nll 31.6504  train/lr 1.900e-04  throughput/rows_s 8.896e+03  train/grad_norm 281.6312  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:09]   fit  37%|####      | 30/81 ETA 00:33   train/batch_nll 31.6504  train/lr 1.900e-04  throughput/rows_s 8.896e+03  train/grad_norm 281.6312  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:11]   fit  43%|####      | 35/81 ETA 00:28   train/batch_nll 21.5742  train/lr 2.500e-04  throughput/rows_s 8.875e+03  train/grad_norm 170.1609  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:13]   fit  48%|#####     | 39/81 ETA 00:25   train/batch_nll 21.5742  train/lr 2.500e-04  throughput/rows_s 8.875e+03  train/grad_norm 170.1609  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:15]   fit  53%|#####     | 43/81 ETA 00:22   train/batch_nll 17.6328  train/lr 3.050e-04  throughput/rows_s 8.868e+03  train/grad_norm 123.1198  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:17]   fit  58%|######    | 47/81 ETA 00:19   train/batch_nll 17.6328  train/lr 3.050e-04  throughput/rows_s 8.868e+03  train/grad_norm 123.1198  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:19]   fit  64%|######    | 52/81 ETA 00:16   train/batch_nll 16.0859  train/lr 3.650e-04  throughput/rows_s 8.860e+03  train/grad_norm 103.3551  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:21]   fit  69%|#######   | 56/81 ETA 00:14   train/batch_nll 16.0859  train/lr 3.650e-04  throughput/rows_s 8.860e+03  train/grad_norm 103.3551  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:01:22] fit: time budget reached at step 58
+[11:01:28] fit: 58 steps, 237,568 rows in 38s, 7,254 rows/s (6s of curves)
+[11:01:28] fit done (40s)
+[11:01:30] holdout rows: A_full 3,629, A_block 9,744, B_condition 6,794, B_project 8,012, B_new 8,364, C 18,014, D 1,200
+[11:01:30] holdout NB-NLL: A_full 7.831, A_block 8.138, B_condition 8.411, B_project 8.417, B_new 8.509, C 8.036
+[11:01:30] dispersion shifts: A_full -2.05, A_block -2.14, B_condition -2.08, B_project -1.77, B_new -1.73, C -2.20, D -2.20
+[11:01:30] glm refit: 385,006 rows, 60 steps, NLL without lgamma(y+1) -19008.3672 to -19008.6016 (1s)
+[11:01:30] refit: 385,006 rows, 24 steps of 4,096 (0.25 epoch), RAM 1.5 GB
+[11:01:30] refit: time budget reached at step 0
+[11:01:30] refit: 0 steps, 0 rows in 0s, 0 rows/s (0s of curves)
+[11:01:31] fit total 43s, RAM 1.5 GB
+[11:01:31] fit 43s, RAM 1.5 Go
+[11:01:31] --- evaluation ---
+[11:01:32] region   NB-NLL     MAE      R2   lignes
+[11:01:32] A          7.866   1.610   0.059   18046
+[11:01:32] B          9.344   1.874  -0.134   8436
+[11:01:32] C          7.590   1.683   0.169   1666
+[11:01:32] D          8.337   1.367   0.335   34
+[11:01:32] challenge  8.267   1.723   0.032   
+[11:01:32] fit 43s, predict 1s, GPU pic 1.66 Go
+[11:01:32] --- termine en 00:44 ---
+[11:01:32] final    : train/batch_nll 16.0859  train/lr 3.650e-04  throughput/rows_s 8.860e+03  train/grad_norm 103.3551  train/nb_nll 10.5670  val/nb_nll_A 10.7602  val/nb_nll_B 10.2327  val/nb_nll_C 10.7974  val/nb_nll_D 10.1826  val/nb_nll 10.5968  holdout/nb_nll_A_full 7.8311  holdout/nb_nll_A_block 8.1384  holdout/nb_nll_B_condition 8.4114  holdout/nb_nll_B_project 8.4170  holdout/nb_nll_B_new 8.5087  holdout/nb_nll_C 8.0358  holdout/delta_A_full -2.0549  holdout/delta_A_block -2.1374  holdout/delta_B_condition -2.0810  holdout/delta_B_project -1.7673  holdout/delta_B_new -1.7257  holdout/delta_C -2.2047  holdout/delta_D -2.2047  best/val_nb_nll 10.5968  best/step 58.0000  eval/nb_nll_A 7.8659  eval/mae_A 1.6099  eval/r2_A 0.0590  eval/nb_nll_B 9.3443  eval/mae_B 1.8745  eval/r2_B -0.1337  eval/nb_nll_C 7.5901  eval/mae_C 1.6831  eval/r2_C 0.1694  eval/nb_nll_D 8.3370  eval/mae_D 1.3669  eval/r2_D 0.3345  eval/nb_nll_challenge 8.2667  eval/mae_challenge 1.7225  eval/r2_challenge 0.0316  time/fit_s 42.6375  time/predict_s 1.1243  memory/gpu_peak_gb 1.6575
+[11:01:32] courbes  : mlflow ui (depuis D:\Loisir\Code_python\codabench_virtual_bacteria)

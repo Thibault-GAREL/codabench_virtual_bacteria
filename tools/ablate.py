@@ -19,6 +19,8 @@ Suites:
     domain    the choices of this model (id biases, level dropout, size, lr)
     mu        the mean mu on the submitted preset: id biases with the GLM
               prior, a frozen GLM as offset or token, two seeds mixed
+    t4        the 13 runs at the T4 hour: the mu ideas, out_scale, the mlp
+              mixer, one head, the sizes, and one long run
 """
 
 import argparse
@@ -95,6 +97,26 @@ SUITES = {
         "seeds2_t4": {"n_models": 2, "epochs": 1.2},
         "seeds2_full": {"n_models": 2},
     }),
+    # the 13 runs of 2026-11-06, every one at the T4 hour of the platform:
+    # the A40 is 2.95 times faster, so run with --max-minutes 13.5 --epochs 6
+    # and the clock-aware schedule stops each run where the T4 would. Bigger
+    # models get fewer epochs, two seeds share the time, the GLM pays its
+    # own fit, as on the platform. long8 is the sweet spot run, no clock.
+    "t4": (None, {
+        "ref": {},
+        "bias_l2": {"id_bias": True, "bias_prior": 1.0},
+        "glm_offset": {"glm_eta": "offset"},
+        "glm_token": {"glm_eta": "token"},
+        "out_scale": {"out_scale": True},
+        "seeds2": {"n_models": 2},
+        "mlp": {"mixer": "mlp"},
+        "heads1": {"n_heads": 1},
+        "d32": {"d_model": 32},
+        "d96": {"d_model": 96},
+        "layers1": {"n_layers": 1},
+        "layers3": {"n_layers": 3},
+        "long8": {"epochs": 8.0, "max_minutes": 240.0},
+    }),
 }
 # the speed suite only needs a short fit and no refit
 SPEED = {"refit_epochs": 0.0, "eval_every": 1000}
@@ -149,9 +171,9 @@ def main():
                       if suite == "speed" else
                       {"epochs": args.epochs,
                        "refit_epochs": args.refit_epochs})
-            # a variant may set its own epochs (the T4 share of the mu suite)
-            params = {**defaults, **base, **budget, **delta,
-                      "max_minutes": args.max_minutes, **extra}
+            budget["max_minutes"] = args.max_minutes
+            # a variant may set its own epochs or clock (long8 of t4)
+            params = {**defaults, **base, **budget, **delta, **extra}
             print(f"\n=== {suite} / {name}: {params}", flush=True)
             t = time.time()
             scores = ev.evaluate(

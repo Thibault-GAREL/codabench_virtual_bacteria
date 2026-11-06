@@ -1,0 +1,42 @@
+[11:05:03] === tf-t4-d96_run-01 ===
+[11:05:03] projet   : D:\Loisir\Code_python\codabench_virtual_bacteria
+[11:05:03] python   : 3.12.1 | torch 2.5.1+cu121, cuda sur NVIDIA GeForce GTX 1660 Ti with Max-Q Design (6.0 Go)
+[11:05:03] git      : 43be546 (main, modifie)
+[11:05:03] logs     : D:\Loisir\Code_python\codabench_virtual_bacteria\outputs\logs\tf-t4-d96_run-01\run.log
+[11:05:03] mlflow   : D:\Loisir\Code_python\codabench_virtual_bacteria\mlruns (experience codabench_virtual_bacteria)
+[11:05:03] config   : submission=submissions\transformer\submission.py, layer_stats_interval=0, mode=debug, suite=t4, variant=d96, d_model=96 ...
+[11:05:03]            detail complet dans config.json
+[11:05:03] --- donnees ---
+[11:05:03] train 385,006 lignes | A 18,046, B 8,436, C 1,666, D 34 | RAM 1.5 Go
+[11:05:03] --- entrainement ---
+[11:05:03] prepared tables of the previous fit reused
+[11:05:03] holdout rows: A 13,373, B 23,170, C 18,014, D 1,200, fit 329,249, RAM 1.5 GB
+[11:05:03] network: 21 tokens of 96, 2 attention layers, 1,020,430 parameters (223,552 in the blocks), GPU 0.03 GB, RAM 1.5 GB
+[11:05:03] fit: 329,249 rows, 81 steps of 4,096 (1 epoch), RAM 1.5 GB
+[11:05:17]   fit   1%|          | 1/81 ETA 18:24   train/batch_nll 35.6191  train/lr 5.000e-06  throughput/rows_s 5.504e+03  train/grad_norm nan  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:05:21]   fit   6%|#         | 5/81 ETA 04:37   train/batch_nll 35.6191  train/lr 5.000e-06  throughput/rows_s 5.504e+03  train/grad_norm nan  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:05:26]   fit  11%|#         | 9/81 ETA 03:02   train/batch_nll 35.6191  train/lr 5.000e-06  throughput/rows_s 5.504e+03  train/grad_norm nan  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:05:30]   fit  16%|##        | 13/81 ETA 02:22   train/batch_nll 34.9980  train/lr 2.900e-04  throughput/rows_s 3.756e+03  train/grad_norm 375.7029  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:05:36]   fit  22%|##        | 18/81 ETA 01:55   train/batch_nll 34.9980  train/lr 2.900e-04  throughput/rows_s 3.756e+03  train/grad_norm 375.7029  train/nb_nll 17.9874  val/nb_nll_A 18.1243  val/nb_nll_B 16.3316  val/nb_nll_C 17.0411  val/nb_nll_D 15.1489  val/nb_nll 17.1656
+[11:05:37] fit: time budget reached at step 19
+[11:05:50] fit: 19 steps, 77,824 rows in 47s, 2,272 rows/s (13s of curves)
+[11:05:50] fit done (47s)
+[11:05:55] holdout rows: A_full 3,629, A_block 9,744, B_condition 6,794, B_project 8,012, B_new 8,364, C 18,014, D 1,200
+[11:05:55] holdout NB-NLL: A_full 8.106, A_block 8.435, B_condition 8.718, B_project 8.650, B_new 8.768, C 8.332
+[11:05:55] dispersion shifts: A_full -2.90, A_block -3.00, B_condition -2.96, B_project -2.55, B_new -2.54, C -3.07, D -3.07
+[11:05:55] refit: 385,006 rows, 24 steps of 4,096 (0.25 epoch), RAM 1.5 GB
+[11:05:55] refit: time budget reached at step 0
+[11:05:55] refit: 0 steps, 0 rows in 0s, 0 rows/s (0s of curves)
+[11:05:55] fit total 52s, RAM 1.5 GB
+[11:05:55] fit 52s, RAM 1.5 Go
+[11:05:55] --- evaluation ---
+[11:05:58] region   NB-NLL     MAE      R2   lignes
+[11:05:58] A          8.140   1.453   0.206   18046
+[11:05:58] B          9.695   1.776  -0.003   8436
+[11:05:58] C          7.850   1.554   0.281   1666
+[11:05:58] D          8.592   1.240   0.442   34
+[11:05:58] challenge  8.562   1.594   0.161   
+[11:05:58] fit 52s, predict 2s, GPU pic 2.26 Go
+[11:05:58] --- termine en 00:55 ---
+[11:05:58] final    : train/batch_nll 34.9980  train/lr 2.900e-04  throughput/rows_s 3.756e+03  train/grad_norm 375.7029  train/nb_nll 13.8787  val/nb_nll_A 14.0196  val/nb_nll_B 12.9090  val/nb_nll_C 13.6057  val/nb_nll_D 12.3735  val/nb_nll 13.5114  holdout/nb_nll_A_full 8.1065  holdout/nb_nll_A_block 8.4347  holdout/nb_nll_B_condition 8.7183  holdout/nb_nll_B_project 8.6497  holdout/nb_nll_B_new 8.7681  holdout/nb_nll_C 8.3324  holdout/delta_A_full -2.9020  holdout/delta_A_block -3.0050  holdout/delta_B_condition -2.9589  holdout/delta_B_project -2.5460  holdout/delta_B_new -2.5408  holdout/delta_C -3.0696  holdout/delta_D -3.0696  best/val_nb_nll 13.5114  best/step 19.0000  eval/nb_nll_A 8.1403  eval/mae_A 1.4527  eval/r2_A 0.2057  eval/nb_nll_B 9.6946  eval/mae_B 1.7758  eval/r2_B -0.0031  eval/nb_nll_C 7.8498  eval/mae_C 1.5544  eval/r2_C 0.2814  eval/nb_nll_D 8.5916  eval/mae_D 1.2399  eval/r2_D 0.4416  eval/nb_nll_challenge 8.5615  eval/mae_challenge 1.5943  eval/r2_challenge 0.1613  time/fit_s 52.4433  time/predict_s 2.4140  memory/gpu_peak_gb 2.2583
+[11:05:58] courbes  : mlflow ui (depuis D:\Loisir\Code_python\codabench_virtual_bacteria)

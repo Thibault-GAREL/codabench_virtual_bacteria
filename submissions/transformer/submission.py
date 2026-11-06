@@ -13,10 +13,14 @@
 - Level dropout teaches that fallback: at each step, 1 gene family in 10,
   1 condition in 10, 1 project in 20 and 1 run in 20 lose their id tokens,
   as in the regions C (new gene) and B (new run).
-- The id biases are the additive GLM effects (gene, genome, run, project),
-  started from moment estimates so the first step already predicts like a
-  plain additive model. The transformer learns what they cannot: how a gene
-  answers a condition.
+- The id biases (``id_bias``) are per-level additive effects: one free value
+  per gene, genome, run and project, as a GLM would have, but learned inside
+  the network and started from moment estimates. Off in the submitted
+  preset: there is no GLM in that model. A separate, frozen GLM only comes
+  back with ``glm_eta``.
+- ``mixer=mlp`` replaces the attention blocks by one residual MLP over the
+  flattened tokens, to measure what the attention brings. ``out_scale`` puts
+  the head output of log mu in units of the spread of the target.
 - Every component of the 2017 Transformer that Modern_LLM replaces is a flag
   of ``TConfig``, off by default, so each one can be measured alone
   (``tools/ablate.py``): pre-norm, RMSNorm, DyT, SwiGLU, GeGLU, GQA, MQA,
@@ -146,6 +150,9 @@ class TConfig:
     glm_steps: int = 150
     glm_refit_steps: int = 60
     n_models: int = 1              # seeds, mixed by moments
+    out_scale: bool = False        # head log mu in units of the target spread
+    mixer: str = "attention"       # attention | mlp (no attention at all)
+    mlp_hidden: int = 512          # width of the mlp mixer
 
 
 # The configuration this file submits, on top of the 2017 defaults. The best
@@ -615,6 +622,44 @@ class _Block(nn.Module):
         return self._sub(x, self.ffn, self.norm2, getattr(self, "post2", None))
 
 
+class _MLPBlock(nn.Module):
+    """x + FFN(norm(x)), the attention-free residual block."""
+
+    def __init__(self, cfg, width):
+        super().__init__()
+        self.norm = _Norm(cfg.norm, width)
+        # half the FFN expansion of the attention blocks: the mlp mixer then
+        # costs about as much per row as two attention blocks on 21 tokens
+        self.ffn = _FFN(cfg.ffn, width, 2.0)
+        self.drop = nn.Dropout(cfg.dropout)
+
+    def forward(self, x):
+        return x + self.drop(self.ffn(self.norm(x)))
+
+
+class _MLPMixer(nn.Module):
+    """No attention: the tokens of a row flattened into one residual MLP.
+
+    The same tokens and the same building blocks (norm, FFN) as the
+    transformer, so the comparison measures the attention alone.
+    """
+
+    def __init__(self, cfg, n_tokens):
+        super().__init__()
+        width = cfg.mlp_hidden
+        self.inp = nn.Linear(n_tokens * cfg.d_model, width)
+        self.blocks = nn.ModuleList(_MLPBlock(cfg, width)
+                                    for _ in range(cfg.n_layers))
+        self.norm = _Norm(cfg.norm, width)
+        self.out = nn.Linear(width, cfg.d_model)
+
+    def forward(self, x):
+        x = self.inp(x.flatten(1))
+        for block in self.blocks:
+            x = block(x)
+        return self.out(self.norm(x))
+
+
 class _Numbers(nn.Module):
     """One token per number of the run sheet: z * w + b, or a missing token."""
 
@@ -648,7 +693,7 @@ class _Slots(nn.Module):
 
 
 class _Biases(nn.Module):
-    """The additive GLM effects, read with index_select (fast backward)."""
+    """Per-level additive effects (id_bias), read with index_select."""
 
     def __init__(self, init):
         super().__init__()
@@ -718,10 +763,19 @@ class _ExprTransformer(nn.Module):
             self.n_tokens += 2
         self.slots = _Slots(self.n_tokens, d)
         self.drop = nn.Dropout(cfg.dropout)
-        self.blocks = nn.ModuleList(_Block(cfg) for _ in range(cfg.n_layers))
+        if cfg.mixer not in ("attention", "mlp"):
+            raise ValueError(f"unknown mixer {cfg.mixer}")
+        if cfg.mixer == "mlp":
+            self.mixer = _MLPMixer(cfg, self.n_tokens)
+            self.blocks = nn.ModuleList()
+        else:
+            self.blocks = nn.ModuleList(_Block(cfg)
+                                        for _ in range(cfg.n_layers))
         self.final_norm = (_Norm(cfg.norm, d) if cfg.norm_place != "post"
                            else nn.Identity())
         self.head = nn.Linear(d, 2)
+        # multiplies the head outputs (log mu, log sigma), see out_scale
+        self.register_buffer("head_scale", torch.ones(2), persistent=False)
         self.bias = _Biases(bias_init)
         self._init_weights()
 
@@ -800,9 +854,13 @@ class _ExprTransformer(nn.Module):
         glm = (self.glm_terms(g, r, gene_on, run_on, prj_on, cond_on)
                if self.glm_mode != "off" else None)
         x = self.tokens(g, r, gene_on, run_on, prj_on, cond_on, glm)
-        for block in self.blocks:
-            x = block(x)
-        out = self.head(self.final_norm(x[:, 0])).float()
+        if self.cfg.mixer == "mlp":
+            h = self.mixer(x)
+        else:
+            for block in self.blocks:
+                x = block(x)
+            h = x[:, 0]
+        out = self.head(self.final_norm(h)).float() * self.head_scale
         eta, log_r = out[:, 0], out[:, 1]
         if self.cfg.id_bias:
             be, br = self.biases(g, r, gene_on.float(), run_on.float(),
@@ -941,7 +999,7 @@ class TransformerModel:
         return {"b0": b0, "a_gene": a_gene, "b_run": b_run}
 
     def _bias_init(self, gene, run, y, off, rows):
-        """Moment estimates on the log scale, as the GLM warm start."""
+        """Moment estimates on the log scale, the per-level warm start."""
         ix = self.ix
         m = self._moments(gene, run, y, off, rows)
         b0, a_gene, b_run = m["b0"], m["a_gene"], m["b_run"]
@@ -1089,7 +1147,8 @@ class TransformerModel:
         decay, rest = [], []
         for name, p in net.named_parameters():
             # weight decay on the matrices of the blocks and the projections
-            # only, never on norms, biases, embeddings or the GLM effects
+            # only, never on norms, biases, embeddings or the per-level
+            # effects
             matrix = p.dim() == 2 and not name.startswith(
                 ("gene_emb", "genome_emb", "run_emb", "prj_emb", "cond_emb",
                  "field_emb", "slots.", "numbers.", "bias."))
@@ -1319,6 +1378,12 @@ class TransformerModel:
         self.family_dev = torch.as_tensor(self.family).long().to(dev)
         bias = self._bias_init(gene, run, y, off, fit_rows)
         self.net = _ExprTransformer(cfg, self.tables, bias).to(dev)
+        # out_scale: the head predicts log mu in units of the spread of
+        # log(y + 0.5) - offset on the fit rows (about 1.9 on the train rows)
+        some = np.flatnonzero(fit_rows)[::20]
+        self.head_scale = [float(np.std(np.log(y[some] + 0.5) - off[some]))
+                           if cfg.out_scale else 1.0, 1.0]
+        self.net.head_scale.copy_(torch.as_tensor(self.head_scale))
         glm = center = None
         if cfg.glm_eta != "off":
             # fitted on the fit rows only: its effects on a holdout level
@@ -1332,7 +1397,7 @@ class TransformerModel:
         n_params = sum(p.numel() for p in self.net.parameters())
         n_blocks = sum(p.numel() for p in self.net.blocks.parameters())
         self.log(f"network: {self.net.n_tokens} tokens of {cfg.d_model}, "
-                 f"{cfg.n_layers} layers, {n_params:,} parameters "
+                 f"{cfg.n_layers} {cfg.mixer} layers, {n_params:,} parameters "
                  f"({n_blocks:,} in the blocks), "
                  + (f"GPU {torch.cuda.memory_allocated() / 1e9:.2f} GB, "
                     if dev != "cpu" else "") + _ram())
@@ -1360,6 +1425,7 @@ class TransformerModel:
             if k:
                 torch.manual_seed(self._seed)
                 self.net = _ExprTransformer(cfg, self.tables, bias).to(dev)
+                self.net.head_scale.copy_(torch.as_tensor(self.head_scale))
                 if glm is not None:
                     self.net.set_glm(glm, center)
             step = self._train(
