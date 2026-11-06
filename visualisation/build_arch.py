@@ -278,6 +278,10 @@ def describe_transformer(net, cfg, tables):
              info=["température, pH, agitation, OD600",
                    "z·w + b, ou token manquant"]),
     ])
+    if cfg.glm_eta == "token":
+        sources["children"].append(node(
+            "η du GLM", "linear", module="glm_tokens",
+            info=["log μ et log σ du GLM gelé", "masqués comme les ids"]))
     tokens = node("Tokens", "stack", scale=2,
                   info=[f"{net.n_tokens} tokens de {d}"],
                   children=[sources, node("Concat", "concat"),
@@ -310,7 +314,12 @@ def describe_transformer(net, cfg, tables):
         node("Observation", "input", scale=3, shape="[B]",
              info=["un gène dans un run", "offset = profondeur + longueur"]),
         node("branches", "group", box=False, layout="row", flow="par",
-             children=[transformer, biases]),
+             children=[transformer, biases] + ([node(
+                 "GLM additif gelé", "embed",
+                 info=["η et ρ ajoutés tels quels",
+                       "ajusté avant le transformer"],
+                 doc="Le transformer n'apprend que l'écart à ce GLM.")]
+                 if cfg.glm_eta == "offset" else [])),
         node("+", "add"),
         node("sorties", "group", box=False, layout="row", flow="par",
              children=[node("log μ", "head", shape="[B]",

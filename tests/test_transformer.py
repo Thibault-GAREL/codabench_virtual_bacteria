@@ -319,6 +319,84 @@ def test_fit_and_predict(precision):
     assert nb_nll(y, pred[:, 0], pred[:, 1]) < flat
 
 
+# --- the mu experiments: GLM eta, seeds mixed by moments, bias prior -----------
+
+def test_mix_of_one_model_is_that_model():
+    eta, log_r = torch.randn(5), torch.randn(5)
+    m, r = T._mix([eta], [log_r])
+    assert m is eta and r is log_r
+
+
+def test_mix_keeps_the_mean_and_the_variance_of_the_mixture():
+    mu, sig = torch.tensor([10.0, 30.0]), torch.tensor([5.0, 2.0])
+    log_m, log_r = T._mix([torch.log(mu[:1]), torch.log(mu[1:])],
+                          [torch.log(sig[:1]), torch.log(sig[1:])])
+    m, r = float(log_m.exp()), float(log_r.exp())
+    var_k = mu + mu ** 2 / sig
+    mean = float(mu.mean())
+    var = float((var_k + mu ** 2).mean()) - mean ** 2
+    assert m == pytest.approx(mean, rel=1e-5)
+    assert m + m ** 2 / r == pytest.approx(var, rel=1e-4)
+
+
+def glm_net(mode):
+    t = tiny_tables()
+    bias = {**tiny_bias(), "b0": np.array(0.0), "rho0": np.array(0.0)}
+    # id biases off, as in the submitted preset: the GLM carries the levels
+    net = T._ExprTransformer(cfg(glm_eta=mode, id_bias=False), t, bias).eval()
+    glm = {"b0": torch.tensor(2.0), "a_genome": torch.zeros(1),
+           "a_gene": torch.arange(6, dtype=torch.float32),
+           "b_project": torch.tensor([0.5, -0.5]),
+           "b_condition": torch.tensor([0.1, 0.2, 0.3, 0.0]),
+           "b_run": torch.full((5,), 0.25), "rho0": torch.tensor(1.0),
+           "rho_genome": torch.zeros(1), "rho_gene": torch.ones(6)}
+    if mode != "off":
+        net.set_glm(glm, [2.0, 1.0, 1.0, 1.0])
+    return net
+
+
+def test_glm_terms_follow_the_masks():
+    net = glm_net("offset")
+    g, r = torch.tensor([3, 3]), torch.tensor([1, 1])
+    on = torch.tensor([True, False])
+    eta, log_r = net.glm_terms(g, r, on, *flags(2)[1:])
+    # gene 3 visible: + a_gene = 3 and rho_gene = 1, masked: neither
+    assert float(eta[0] - eta[1]) == pytest.approx(3.0)
+    assert float(log_r[0] - log_r[1]) == pytest.approx(1.0)
+
+
+def test_glm_offset_starts_at_the_glm():
+    net = glm_net("offset")
+    g, r = torch.tensor([0, 4]), torch.tensor([2, 3])
+    eta, log_r, _ = net(g, r, *flags(2))
+    ge, gr = net.glm_terms(g, r, *flags(2))
+    torch.testing.assert_close(eta, ge)
+    torch.testing.assert_close(log_r, gr)
+
+
+def test_glm_token_adds_two_tokens():
+    assert glm_net("token").n_tokens == glm_net("off").n_tokens + 2
+
+
+@pytest.mark.parametrize("variant", [
+    {"glm_eta": "offset"}, {"glm_eta": "token"}, {"n_models": 2},
+    {"id_bias": True, "bias_prior": 1.0}])
+def test_mu_variants_fit_and_predict(variant):
+    genes, runs, train = synthetic(seed=2)
+    c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,
+                epochs=2, refit_epochs=0.5, eval_every=10, glm_steps=30,
+                glm_refit_steps=10, norm_place="pre", **variant)
+    model = T.TransformerModel({"feature_annotations": genes}, c)
+    model.log = lambda message: None
+    model.fit(train, runs, None)
+    assert len(model.nets) == c.n_models
+    pred = model.predict(train.iloc[:400], runs, None)
+    assert np.isfinite(pred).all() and (pred > 0).all()
+    y = train["readcount"].values[:400]
+    flat = nb_nll(y, np.full(400, y.mean()), np.full(400, 1.0))
+    assert nb_nll(y, pred[:, 0], pred[:, 1]) < flat
+
+
 def test_holdout_levels_start_the_refit_from_mask():
     genes, runs, train = synthetic(seed=1)
     c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,

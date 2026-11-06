@@ -80,6 +80,16 @@ RUN_NUMBERS = ["temperature_celsius", "ph", "agitation_rpm", "od600"]
 TOP_NAMES = 40
 # Rows of the fixed samples that draw the train and validation curves
 CURVE_ROWS = 100_000
+# Prior standard deviation of each effect, on the log scale, as in the GLM.
+# GLM_PRIOR_SD for the frozen GLM of glm_eta, BIAS_PRIOR_SD for the id biases
+# of the network (bias_prior).
+GLM_PRIOR_SD = {"a_genome": 3.0, "a_gene": 3.0, "b_project": 1.0,
+                "b_condition": 1.0, "b_run": 1.0, "rho_genome": 1.0,
+                "rho_gene": 1.0}
+BIAS_PRIOR_SD = {"a_genome": 3.0, "a_gene": 3.0, "b_project": 1.0,
+                 "b_run": 1.0, "rho_gene": 1.0}
+# Rows per forward / backward pass of the GLM fit
+GPU_CHUNK = 2_000_000
 # Prepared tables kept across fits of one process, see TransformerModel.prepare
 KEEP_ENV = "BACTERIA_KEEP_PREPARED"
 _PREPARED = {}
@@ -130,6 +140,12 @@ class TConfig:
     drop_prj: float = 0.05
     drop_run: float = 0.05
     seed: int = 0
+    # the mean mu, tests of 2026-11-06 (all off in the submitted 7.11)
+    bias_prior: float = 0.0        # L2 on the id biases, 1 is the GLM prior
+    glm_eta: str = "off"           # off | offset | token: a frozen additive GLM
+    glm_steps: int = 150
+    glm_refit_steps: int = 60
+    n_models: int = 1              # seeds, mixed by moments
 
 
 # The configuration this file submits, on top of the 2017 defaults. The best
@@ -299,6 +315,24 @@ def _nb_nll_capped(y, log_mu, log_r):
     log_r = log_r.clamp(-7, 12)
     full = _nb_nll_torch(y, log_mu, log_r) + torch.lgamma(y + 1)
     return full.clamp(max=NLL_CAP)
+
+
+def _mix(etas, log_rs):
+    """One NB with the mean and the variance of the models' NB mixture.
+
+    Equal weights. The mixture of NB is not a NB: this keeps its first two
+    moments, so a disagreement between the models widens sigma.
+    """
+    if len(etas) == 1:
+        return etas[0], log_rs[0]
+    mu = torch.stack([e.clamp(-12, 18).exp() for e in etas]).double()
+    r = torch.stack([v.clamp(-7, 12).exp() for v in log_rs]).double()
+    m = mu.mean(0)
+    second = (mu + mu ** 2 / r + mu ** 2).mean(0)
+    # variance beyond Poisson, positive by Jensen
+    excess = (second - m ** 2 - m).clamp(min=1e-12)
+    log_m = torch.log(m)
+    return log_m.float(), (2 * log_m - torch.log(excess)).float()
 
 
 class _Index:
@@ -664,6 +698,24 @@ class _ExprTransformer(nn.Module):
         self.features = nn.Linear(t["x_gene"].shape[1], d)
         self.numbers = _Numbers(n_nums, d)
         self.n_tokens = len(self.SLOTS) + n_fields + n_nums
+        # the frozen additive GLM (glm_eta), filled by set_glm
+        self.glm_mode = cfg.glm_eta
+        if self.glm_mode not in ("off", "offset", "token"):
+            raise ValueError(f"unknown glm_eta {self.glm_mode}")
+        if self.glm_mode != "off":
+            sizes = {"b0": (), "a_genome": (t["n_genome"],),
+                     "a_gene": (self.n_gene,), "b_project": (self.n_prj,),
+                     "b_condition": (self.n_cond + 1,),
+                     "b_run": (self.n_run,), "rho0": (),
+                     "rho_genome": (t["n_genome"],),
+                     "rho_gene": (self.n_gene,), "center": (4,)}
+            for k, shape in sizes.items():
+                self.register_buffer(f"glm_{k}", torch.zeros(shape),
+                                     persistent=False)
+        if self.glm_mode == "token":
+            # two numbers: the GLM log mu and log sigma of the row
+            self.glm_tokens = _Numbers(2, d)
+            self.n_tokens += 2
         self.slots = _Slots(self.n_tokens, d)
         self.drop = nn.Dropout(cfg.dropout)
         self.blocks = nn.ModuleList(_Block(cfg) for _ in range(cfg.n_layers))
@@ -690,7 +742,32 @@ class _ExprTransformer(nn.Module):
         nn.init.zeros_(self.head.weight)
         nn.init.zeros_(self.head.bias)
 
-    def tokens(self, g, r, gene_on, run_on, prj_on, cond_on):
+    @torch.no_grad()
+    def set_glm(self, glm, center):
+        """Copies the GLM effects (tensors) and the token centering in."""
+        for k, v in glm.items():
+            getattr(self, f"glm_{k}").copy_(v)
+        self.glm_center.copy_(torch.as_tensor(center))
+
+    def glm_terms(self, g, r, gene_on, run_on, prj_on, cond_on):
+        """GLM log mu (without the offset) and log sigma of each row.
+
+        An effect counts only when its level is visible, exactly as the id
+        tokens: a masked gene loses a_gene and rho_gene, a masked run b_run.
+        """
+        G = self.genome_of_gene[g]
+        p = self.prj_of_run[r]
+        c = self.cond_of_run[r]
+        ci = torch.where(c < 0, self.n_cond, c)
+        f = [x.float() for x in (gene_on, run_on, prj_on, cond_on)]
+        eta = (self.glm_b0 + self.glm_a_genome[G] + self.glm_a_gene[g] * f[0]
+               + self.glm_b_run[r] * f[1] + self.glm_b_project[p] * f[2]
+               + self.glm_b_condition[ci] * f[3])
+        log_r = (self.glm_rho0 + self.glm_rho_genome[G]
+                 + self.glm_rho_gene[g] * f[0])
+        return eta, log_r
+
+    def tokens(self, g, r, gene_on, run_on, prj_on, cond_on, glm=None):
         p = self.prj_of_run[r]
         c = self.cond_of_run[r]
         c_tok = torch.where(c < 0, self.n_cond + 1,
@@ -706,6 +783,11 @@ class _ExprTransformer(nn.Module):
             self.field_emb(self.run_cat[r]),
             nums,
         ]
+        if self.glm_mode == "token":
+            c0 = self.glm_center
+            z = torch.stack([(glm[0] - c0[0]) / c0[1],
+                             (glm[1] - c0[2]) / c0[3]], dim=1)
+            parts.append(self.glm_tokens(z, torch.ones_like(z)))
         x = torch.cat([part.to(nums.dtype) for part in parts], dim=1)
         return self.drop(self.slots(x))
 
@@ -715,7 +797,9 @@ class _ExprTransformer(nn.Module):
 
     def forward(self, g, r, gene_on, run_on, prj_on, cond_on):
         """log mu without the offset, log sigma, auxiliary loss."""
-        x = self.tokens(g, r, gene_on, run_on, prj_on, cond_on)
+        glm = (self.glm_terms(g, r, gene_on, run_on, prj_on, cond_on)
+               if self.glm_mode != "off" else None)
+        x = self.tokens(g, r, gene_on, run_on, prj_on, cond_on, glm)
         for block in self.blocks:
             x = block(x)
         out = self.head(self.final_norm(x[:, 0])).float()
@@ -727,6 +811,9 @@ class _ExprTransformer(nn.Module):
         else:
             eta = eta + self.bias.b0
             log_r = log_r + self.bias.rho0
+        if self.glm_mode == "offset":
+            # the network learns a correction to the GLM prediction
+            eta, log_r = eta + glm[0], log_r + glm[1]
         aux = sum((blk.ffn.aux for blk in self.blocks
                    if isinstance(blk.ffn, _MoE)), torch.zeros((), device=g.device))
         return eta, log_r, aux
@@ -840,8 +927,8 @@ class TransformerModel:
                  f"({time.time() - t0:.0f}s)")
         return gene, run, y, off
 
-    def _bias_init(self, gene, run, y, off, rows):
-        """Moment estimates on the log scale, as the GLM warm start."""
+    def _moments(self, gene, run, y, off, rows):
+        """Moment estimates of b0, a_gene and b_run on the log scale."""
         ix = self.ix
         z = np.log(y[rows] + 0.5) - off[rows]
         g, r = gene[rows], run[rows]
@@ -851,11 +938,104 @@ class TransformerModel:
         res = z - b0 - a_gene[g]
         b_run = (np.bincount(r, res, ix.n_run)
                  / (np.bincount(r, minlength=ix.n_run) + 1.0))
+        return {"b0": b0, "a_gene": a_gene, "b_run": b_run}
+
+    def _bias_init(self, gene, run, y, off, rows):
+        """Moment estimates on the log scale, as the GLM warm start."""
+        ix = self.ix
+        m = self._moments(gene, run, y, off, rows)
+        b0, a_gene, b_run = m["b0"], m["a_gene"], m["b_run"]
         zero = np.zeros
+        if self.cfg.glm_eta == "offset":
+            # the GLM already carries the level: the network starts at 0
+            b0, a_gene, b_run = 0.0, zero(ix.n_gene), zero(ix.n_run)
+            return {"b0": np.array(0.0), "a_genome": zero(ix.n_genome),
+                    "a_gene": a_gene, "b_run": b_run,
+                    "b_project": zero(ix.n_prj), "rho0": np.array(0.0),
+                    "rho_gene": zero(ix.n_gene)}
         return {"b0": np.array(b0), "a_genome": zero(ix.n_genome),
                 "a_gene": a_gene, "b_run": b_run,
                 "b_project": zero(ix.n_prj), "rho0": np.array(np.log(5.0)),
                 "rho_gene": zero(ix.n_gene)}
+
+    def _fit_glm(self, gene, run, y, off, rows, steps, stage, init=None):
+        """Additive NB GLM on ``rows``, full batch Adam over GPU chunks.
+
+        The reference GLM without its interactions: genome, gene, project,
+        condition and run effects, each pulled to 0 by its L2 prior. Returns
+        the effects as device tensors, frozen afterwards.
+        """
+        dev, t, ix = self.device, self.t, self.ix
+        t_start = time.time()
+        sel = torch.as_tensor(np.flatnonzero(rows)).to(dev)
+        n = len(sel)
+        if init is None:
+            b = self._moments(gene, run, y, off, rows)
+            zero = np.zeros
+            init = {"b0": np.array(b["b0"]), "a_genome": zero(ix.n_genome),
+                    "a_gene": b["a_gene"], "b_project": zero(ix.n_prj),
+                    "b_condition": zero(ix.n_cond + 1), "b_run": b["b_run"],
+                    "rho0": np.array(np.log(5.0)),
+                    "rho_genome": zero(ix.n_genome),
+                    "rho_gene": zero(ix.n_gene)}
+        P = {k: torch.tensor(np.asarray(v.cpu() if torch.is_tensor(v) else v),
+                             dtype=torch.float32, device=dev,
+                             requires_grad=True) for k, v in init.items()}
+        G_of = torch.as_tensor(ix.genome_of_gene).long().to(dev)
+        p_of = torch.as_tensor(ix.prj_of_run).long().to(dev)
+        c_of = torch.as_tensor(np.where(ix.cond_of_run >= 0, ix.cond_of_run,
+                                        ix.n_cond)).long().to(dev)
+        opt = torch.optim.Adam(list(P.values()), lr=0.05)
+        first = last = math.nan
+        for step in range(steps):
+            for group in opt.param_groups:
+                group["lr"] = 0.05 * (0.1 + 0.45 * (1 + math.cos(
+                    math.pi * step / steps)))
+            opt.zero_grad(set_to_none=True)
+            total = 0.0
+            for s in range(0, n, GPU_CHUNK):
+                i = sel[s:s + GPU_CHUNK]
+                g, r = t["gene"][i].long(), t["run"][i].long()
+                G, pr, c = G_of[g], p_of[r], c_of[r]
+
+                def take(k, idx):
+                    # index_select: the backward of P[k][idx] is 26 times
+                    # slower on rows sorted by genome and run
+                    return torch.index_select(P[k], 0, idx)
+
+                eta = (t["off"][i] + P["b0"] + take("a_genome", G)
+                       + take("a_gene", g) + take("b_project", pr)
+                       + take("b_condition", c) + take("b_run", r))
+                log_r = (P["rho0"] + take("rho_genome", G)
+                         + take("rho_gene", g))
+                loss = _nb_nll_torch(t["y"][i], eta, log_r).sum() / n
+                loss.backward()
+                total += float(loss.detach())
+            penalty = sum((P[k] ** 2).sum() / (2 * sd ** 2)
+                          for k, sd in GLM_PRIOR_SD.items()) / n
+            penalty.backward()
+            opt.step()
+            with torch.no_grad():
+                P["b_condition"][-1] = 0.0
+            first = total if step == 0 else first
+            last = total
+        self.log(f"{stage}: {n:,} rows, {steps} steps, NLL without lgamma(y+1)"
+                 f" {first:.4f} to {last:.4f} ({time.time() - t_start:.0f}s)")
+        return {k: v.detach() for k, v in P.items()}
+
+    def _glm_center(self, glm, idx):
+        """Mean and spread of the GLM terms on some rows, for the tokens."""
+        net, t = self.net, self.t
+        g, r = t["gene"][idx].long(), t["run"][idx].long()
+        on = self._on(g, r, {k: torch.ones(n, dtype=torch.bool,
+                                           device=self.device)
+                             for k, n in (("gene", net.n_gene),
+                                          ("run", net.n_run),
+                                          ("prj", net.n_prj),
+                                          ("cond", net.n_cond))})
+        eta, log_r = net.glm_terms(g, r, *on)
+        return [float(eta.mean()), float(eta.std().clamp(min=1e-3)),
+                float(log_r.mean()), float(log_r.std().clamp(min=1e-3))]
 
     def _seen(self, gene, run, rows):
         """Levels seen in ``rows``, as numpy and as device masks."""
@@ -930,7 +1110,7 @@ class TransformerModel:
         """Level dropout of one step: the levels whose id tokens are hidden."""
         cfg, dev = self.cfg, self.device
         gen = torch.Generator(device=dev)
-        gen.manual_seed(cfg.seed * 100_003 + step)
+        gen.manual_seed(getattr(self, "_seed", cfg.seed) * 100_003 + step)
 
         def draw(n, p):
             return torch.rand(n, generator=gen, device=dev) < p
@@ -946,9 +1126,9 @@ class TransformerModel:
         return cold_gene, cold_run, cold_prj, cold_cond
 
     @torch.no_grad()
-    def _forward_rows(self, idx, seen_dev):
+    def _forward_rows(self, idx, seen_dev, net=None):
         """log mu and log sigma (before the case shift) of the rows ``idx``."""
-        net, t = self.net, self.t
+        net, t = net or self.net, self.t
         was = net.training
         net.eval()
         etas, logs = [], []
@@ -1022,6 +1202,11 @@ class TransformerModel:
             nll = _nb_nll_torch(t["y"][i], eta.float() + t["off"][i],
                                 log_r.float()).mean()
             loss = nll + cfg.moe_aux * aux
+            if cfg.id_bias and cfg.bias_prior > 0:
+                # the GLM prior on the id biases, spread over the rows
+                loss = loss + cfg.bias_prior * sum(
+                    (getattr(net.bias, k) ** 2).sum() / (2 * sd ** 2)
+                    for k, sd in BIAS_PRIOR_SD.items()) / n
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
@@ -1041,7 +1226,7 @@ class TransformerModel:
             if step % 10 == 0 or step == steps - 1:
                 # the curve of the batch loss, lgamma(y + 1) added back
                 values["train/batch_nll"] = float(
-                    nll + torch.lgamma(t["y"][i] + 1).mean())
+                    nll.detach() + torch.lgamma(t["y"][i] + 1).mean())
                 values["train/lr"] = lr
                 values["throughput/rows_s"] = rows_done / max(
                     time.time() - t_start - t_eval, 1e-6)
@@ -1134,6 +1319,16 @@ class TransformerModel:
         self.family_dev = torch.as_tensor(self.family).long().to(dev)
         bias = self._bias_init(gene, run, y, off, fit_rows)
         self.net = _ExprTransformer(cfg, self.tables, bias).to(dev)
+        glm = center = None
+        if cfg.glm_eta != "off":
+            # fitted on the fit rows only: its effects on a holdout level
+            # stay at 0, and the level is masked anyway
+            glm = self._fit_glm(gene, run, y, off, fit_rows, cfg.glm_steps,
+                                "glm fit")
+            self.net.set_glm(glm, [0.0, 1.0, 0.0, 1.0])
+            some = torch.as_tensor(np.flatnonzero(fit_rows)[::50]).to(dev)
+            center = self._glm_center(glm, some)
+            self.net.set_glm(glm, center)
         n_params = sum(p.numel() for p in self.net.parameters())
         n_blocks = sum(p.numel() for p in self.net.blocks.parameters())
         self.log(f"network: {self.net.n_tokens} tokens of {cfg.d_model}, "
@@ -1154,14 +1349,32 @@ class TransformerModel:
 
         curves = {"train": sample(fit_rows), "seen": seen_dev}
         curves.update({k: sample(v) for k, v in groups.items() if v.any()})
-        step = self._train(fit_rows, cfg.epochs, "fit",
-                           deadline=t0 + 0.8 * budget, curves=curves)
+        # n_models networks of seeds seed, seed + 1..., one after the other,
+        # each with its share of the time budget
+        K = max(cfg.n_models, 1)
+        fit_end = t0 + 0.8 * budget
+        t_fit = time.time()
+        self.nets, step = [], 0
+        for k in range(K):
+            self._seed = cfg.seed + k
+            if k:
+                torch.manual_seed(self._seed)
+                self.net = _ExprTransformer(cfg, self.tables, bias).to(dev)
+                if glm is not None:
+                    self.net.set_glm(glm, center)
+            step = self._train(
+                fit_rows, cfg.epochs, "fit" if K == 1 else f"fit {k + 1}/{K}",
+                deadline=t_fit + (k + 1) / K * (fit_end - t_fit),
+                curves=curves, step0=step)
+            self.nets.append(self.net)
         self.log(f"fit done ({time.time() - t0:.0f}s)")
 
-        # 4. One dispersion shift per case, with the challenge metric
-        val = np.flatnonzero(~fit_rows)
-        eta, log_r = self._forward_rows(torch.as_tensor(val).to(dev),
-                                        seen_dev)
+        # 4. One dispersion shift per case, with the challenge metric, on
+        #    the mixture of the networks
+        val = torch.as_tensor(np.flatnonzero(~fit_rows)).to(dev)
+        eta, log_r = _mix(*zip(*(self._forward_rows(val, seen_dev, net)
+                                 for net in self.nets), strict=True))
+        val = val.cpu().numpy()
         case = self._case(seen, gene[val], run[val], self.gp.idx[val],
                           self.gc.idx[val])
         self.delta = self._calibrate(y[val], eta.cpu().numpy(),
@@ -1171,13 +1384,26 @@ class TransformerModel:
         # 5. Refit on every row, so the holdout levels get their embeddings.
         #    They start from the MASK token: a level the refit barely reaches
         #    (0.25 epoch, or cut by the clock) is then still predicted as an
-        #    unseen one, never from an untrained random vector.
+        #    unseen one, never from an untrained random vector. The GLM is
+        #    refitted first, warm started, so its effects cover them too.
         self.seen_fit = seen
-        self._start_from_mask(seen_dev)
         all_rows = np.ones(len(y), dtype=bool)
-        if cfg.refit_epochs > 0:
-            self._train(all_rows, cfg.refit_epochs, "refit",
-                        deadline=t0 + budget, step0=step, lr_scale=0.3)
+        if glm is not None:
+            glm = self._fit_glm(gene, run, y, off, all_rows,
+                                cfg.glm_refit_steps, "glm refit", init=glm)
+        t_ref = time.time()
+        for k, net in enumerate(self.nets):
+            self.net, self._seed = net, cfg.seed + k
+            if glm is not None:
+                net.set_glm(glm, center)
+            self._start_from_mask(seen_dev)
+            if cfg.refit_epochs > 0:
+                step = self._train(
+                    all_rows, cfg.refit_epochs,
+                    "refit" if K == 1 else f"refit {k + 1}/{K}",
+                    deadline=t_ref + (k + 1) / K * (t0 + budget - t_ref),
+                    step0=step, lr_scale=0.3)
+        self.net = self.nets[0]
         self.seen, self.seen_dev = self._seen(gene, run, all_rows)
         self.metric(**self.holdout, **getattr(self, "best", {}))
         # what predict needs: the network, the index, the pairs lookups. The
@@ -1242,8 +1468,10 @@ class TransformerModel:
         n = len(test_df)
         if self.net is None:
             return np.column_stack([np.ones(n), np.ones(n)])
-        dev, net = self.device, self.net
-        net.eval()
+        dev = self.device
+        nets = getattr(self, "nets", None) or [self.net]
+        for net in nets:
+            net.eval()
         gene, _, run = self.ix.rows(test_df)
         off = (test_df["log_length_ratio"].to_numpy(dtype=np.float64)
                + test_df["log_size_factor"].to_numpy(dtype=np.float64))
@@ -1267,8 +1495,12 @@ class TransformerModel:
             on = self._on(g, r, self.seen_dev)
             known = torch.as_tensor(~bad[s:e]).to(dev)
             on = tuple(o & known for o in on)
-            with self._amp():
-                eta, log_r, _ = net(g, r, *on)
+            outs = []
+            for net in nets:
+                with self._amp():
+                    eta, log_r, _ = net(g, r, *on)
+                outs.append((eta.float(), log_r.float()))
+            eta, log_r = _mix(*zip(*outs, strict=True))
             eta = eta.float().cpu().numpy() + off[s:e]
             log_r = log_r.float().cpu().numpy() + shifts[case[s:e]]
             out[s:e, 0] = np.exp(np.clip(eta, -12, 18))

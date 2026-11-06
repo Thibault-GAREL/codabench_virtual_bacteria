@@ -17,6 +17,8 @@ Suites:
     arch2017  each Modern_LLM change alone, on the 2017 Transformer
     modern    each further change on the modern socle
     domain    the choices of this model (id biases, level dropout, size, lr)
+    mu        the mean mu on the submitted preset: id biases with the GLM
+              prior, a frozen GLM as offset or token, two seeds mixed
 """
 
 import argparse
@@ -81,6 +83,18 @@ SUITES = {
         "lr_3e-3": {"lr": 3e-3},
         "lr_3e-4": {"lr": 3e-4},
     }),
+    # the mean mu (2026-11-06), on the submitted preset (base None) at the
+    # T4 budget of 2.4 epochs: run with --epochs 2.4. The GLM fit costs about
+    # 2.5 min of the T4 hour, so its variants get 2.2 epochs. Two seeds share
+    # the hour, 1.2 epochs each, and seeds2_full shows two complete models.
+    "mu": (None, {
+        "ref": {},
+        "bias_l2": {"id_bias": True, "bias_prior": 1.0},
+        "glm_offset": {"glm_eta": "offset", "epochs": 2.2},
+        "glm_token": {"glm_eta": "token", "epochs": 2.2},
+        "seeds2_t4": {"n_models": 2, "epochs": 1.2},
+        "seeds2_full": {"n_models": 2},
+    }),
 }
 # the speed suite only needs a short fit and no refit
 SPEED = {"refit_epochs": 0.0, "eval_every": 1000}
@@ -126,6 +140,8 @@ def main():
     results = []
     for suite in args.suite.split(","):
         base, variants = SUITES[suite]
+        if base is None:
+            base = module.PRESET
         for name, delta in variants.items():
             if only and name not in only:
                 continue
@@ -133,7 +149,8 @@ def main():
                       if suite == "speed" else
                       {"epochs": args.epochs,
                        "refit_epochs": args.refit_epochs})
-            params = {**defaults, **base, **delta, **budget,
+            # a variant may set its own epochs (the T4 share of the mu suite)
+            params = {**defaults, **base, **budget, **delta,
                       "max_minutes": args.max_minutes, **extra}
             print(f"\n=== {suite} / {name}: {params}", flush=True)
             t = time.time()
@@ -152,7 +169,8 @@ def main():
     for suite in dict.fromkeys(s for s, *_ in results):
         rows = [r for r in results if r[0] == suite]
         ref = next((r[2]["eval/nb_nll_challenge"] for r in rows
-                    if r[1] in ("base", "socle", "fp32_naive")), None)
+                    if r[1] in ("base", "socle", "fp32_naive", "ref")),
+                   None)
         for _, name, s, _secs in sorted(
                 rows, key=lambda r: r[2]["eval/nb_nll_challenge"]):
             gap = (s["eval/nb_nll_challenge"] - ref) if ref is not None \
