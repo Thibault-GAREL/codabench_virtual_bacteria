@@ -21,6 +21,8 @@ Suites:
               prior, a frozen GLM as offset or token, two seeds mixed
     t4        the 13 runs at the T4 hour: the mu ideas, out_scale, the mlp
               mixer, one head, the sizes, and one long run
+    mlp       the attention-free mlp at the T4 hour: depth, width,
+              activation, dropout, out_scale, token size, PLR, three seeds
 """
 
 import argparse
@@ -89,7 +91,7 @@ SUITES = {
     # T4 budget of 2.4 epochs: run with --epochs 2.4. The GLM fit costs about
     # 2.5 min of the T4 hour, so its variants get 2.2 epochs. Two seeds share
     # the hour, 1.2 epochs each, and seeds2_full shows two complete models.
-    "mu": (None, {
+    "mu": ({"_on_preset": True, "n_models": 1}, {
         "ref": {},
         "bias_l2": {"id_bias": True, "bias_prior": 1.0},
         "glm_offset": {"glm_eta": "offset", "epochs": 2.2},
@@ -102,7 +104,7 @@ SUITES = {
     # and the clock-aware schedule stops each run where the T4 would. Bigger
     # models get fewer epochs, two seeds share the time, the GLM pays its
     # own fit, as on the platform. long8 is the sweet spot run, no clock.
-    "t4": (None, {
+    "t4": ({"_on_preset": True, "n_models": 1}, {
         "ref": {},
         "bias_l2": {"id_bias": True, "bias_prior": 1.0},
         "glm_offset": {"glm_eta": "offset"},
@@ -116,6 +118,24 @@ SUITES = {
         "layers1": {"n_layers": 1},
         "layers3": {"n_layers": 3},
         "long8": {"epochs": 8.0, "max_minutes": 240.0},
+    }),
+    # 2026-11-06 b: the attention-free mlp at the T4 hour. Run with
+    # --max-minutes 13.3 --epochs 8 --layer-every 0: the A40 is 3.0 times
+    # the T4 without the layer hooks. One factor at a time against
+    # mlp_2x512, then seeds3 with --param to rerun the best ones as three
+    # seeds sharing the hour.
+    "mlp": ({"_on_preset": True, "n_models": 1, "mixer": "mlp"}, {
+        "mlp_2x512": {},
+        "mlp_4x512": {"n_layers": 4},
+        "mlp_8x512": {"n_layers": 8},
+        "mlp_2x1024": {"mlp_hidden": 1024},
+        "mlp_4x1024": {"n_layers": 4, "mlp_hidden": 1024},
+        "gelu": {"ffn": "gelu"},
+        "dropout": {"dropout": 0.1},
+        "out_scale": {"out_scale": True},
+        "d32": {"d_model": 32},
+        "plr": {"num_embed": "plr"},
+        "seeds3": {"n_models": 3},
     }),
 }
 # the speed suite only needs a short fit and no refit
@@ -162,8 +182,10 @@ def main():
     results = []
     for suite in args.suite.split(","):
         base, variants = SUITES[suite]
-        if base is None:
-            base = module.PRESET
+        # a base marked _on_preset is laid over the submitted configuration
+        if base.get("_on_preset"):
+            base = {**module.PRESET,
+                    **{k: v for k, v in base.items() if k != "_on_preset"}}
         for name, delta in variants.items():
             if only and name not in only:
                 continue
@@ -191,7 +213,7 @@ def main():
     for suite in dict.fromkeys(s for s, *_ in results):
         rows = [r for r in results if r[0] == suite]
         ref = next((r[2]["eval/nb_nll_challenge"] for r in rows
-                    if r[1] in ("base", "socle", "fp32_naive", "ref")),
+                    if r[1] in ("base", "socle", "fp32_naive", "ref", "mlp_2x512")),
                    None)
         for _, name, s, _secs in sorted(
                 rows, key=lambda r: r[2]["eval/nb_nll_challenge"]):

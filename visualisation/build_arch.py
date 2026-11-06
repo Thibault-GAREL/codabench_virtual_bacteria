@@ -279,6 +279,13 @@ def describe_transformer(net, cfg, tables):
              info=["température, pH, agitation, OD600",
                    "z·w + b, ou token manquant"]),
     ])
+    if getattr(net, "n_signals", 0):
+        sources["children"].append(node(
+            "Signaux en PLR", "embed", module="signal_plr",
+            info=[f"{net.n_signals} signaux × {cfg.plr_dim}",
+                  f"{cfg.plr_freq} fréquences apprises"],
+            doc="Chaque signal du gène passe par sin et cos de fréquences "
+                "apprises, puis un Linear et un ReLU qui lui sont propres."))
     if cfg.glm_eta == "token":
         sources["children"].append(node(
             "η du GLM", "linear", module="glm_tokens",

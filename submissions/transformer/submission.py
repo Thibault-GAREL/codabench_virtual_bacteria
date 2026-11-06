@@ -153,17 +153,23 @@ class TConfig:
     out_scale: bool = False        # head log mu in units of the target spread
     mixer: str = "attention"       # attention | mlp (no attention at all)
     mlp_hidden: int = 512          # width of the mlp mixer
+    num_embed: str = "linear"      # linear | plr: periodic embeddings of the numbers
+    plr_freq: int = 8              # frequencies per number (plr)
+    plr_dim: int = 8               # size of each gene signal embedding (plr)
 
 
-# The configuration this file submits, on top of the 2017 defaults. The best
-# of the ablations of 2026-11-05 (A40, 1 epoch, local challenge NB-NLL 7.505
-# against 7.548 for the 2017 base and 8.090 for the GLM): the modern socle
-# without the additive id biases, in fp16 without the fused attention (the
-# fastest at 21 tokens). 3 epochs at most, the time budget decides on the T4.
+# The configuration this file submits, on top of the 2017 defaults.
+# - 2026-11-05 ablations (A40, 1 epoch): the modern socle without the
+#   per-level additive effects, in fp16 without the fused attention (the
+#   fastest at 21 tokens). Platform score 7.11 with one model.
+# - 2026-11-06 t4 suite (A40 at the T4 hour): two seeds sharing the hour,
+#   mixed by moments, local challenge NB-NLL 7.505 against 7.584 for one
+#   model, the only gain beyond the noise. 3 epochs at most per model, the
+#   time budget decides on the T4 (about 1.2 each).
 PRESET = {"norm_place": "pre", "norm": "rmsnorm", "ffn": "swiglu",
           "optimizer": "adamw", "grad_clip": 1.0, "schedule": "cosine",
           "precision": "fp16", "sdpa": False, "id_bias": False,
-          "epochs": 3.0}
+          "epochs": 3.0, "n_models": 2}
 
 
 # --- data helpers, shared with the GLM and the hybrid ----------------------
@@ -184,7 +190,7 @@ def _gene_features(genes, submission_dir, log):
     path = next((p for p in paths if p.exists()), None)
     if path is None:
         log(f"no {FEATURE_FILE}, the gene token sees nothing but its genome")
-        return np.zeros((len(genes), 1), dtype=np.float16)
+        return np.zeros((len(genes), 1), dtype=np.float16), 0
     z = np.load(path)
     keys = pd.Index(np.char.add(np.char.add(z["genome_id"], b"|"),
                                 z["feature_id"]).astype(str))
@@ -203,8 +209,10 @@ def _gene_features(genes, submission_dir, log):
     log(f"gene features {path.name}: {int(found.sum()):,} of {len(genes):,} "
         f"genes, {numeric.shape[1]} signals, ESM {esm.shape[1]} dimensions, "
         f"{int(has.sum()):,} with a protein")
-    return np.concatenate([numeric, emb, has[:, None].astype(np.float16),
-                           found[:, None].astype(np.float16)], axis=1)
+    # the signals come first, so plr can take them apart from the ESM block
+    x = np.concatenate([numeric, emb, has[:, None].astype(np.float16),
+                        found[:, None].astype(np.float16)], axis=1)
+    return x, numeric.shape[1]
 
 
 def _run_tokens(runs):
@@ -660,19 +668,49 @@ class _MLPMixer(nn.Module):
         return self.out(self.norm(x))
 
 
-class _Numbers(nn.Module):
-    """One token per number of the run sheet: z * w + b, or a missing token."""
+class _PLR(nn.Module):
+    """Periodic embeddings of numbers (PLR, Gorishniy et al., 2022).
 
-    def __init__(self, n, d):
+    Each number x gives sin and cos of 2 pi c x for learned frequencies c,
+    then a linear layer of its own and a ReLU. A plain z * w + b is one
+    direction per number, PLR lets a number act differently in each range.
+    """
+
+    def __init__(self, n, out, n_freq=8, sigma=1.0):
         super().__init__()
-        self.w = nn.Parameter(torch.randn(n, d) * 0.02)
-        self.b = nn.Parameter(torch.zeros(n, d))
+        self.freq = nn.Parameter(torch.randn(n, n_freq) * sigma)
+        self.weight = nn.Parameter(torch.randn(n, 2 * n_freq, out)
+                                   / math.sqrt(2 * n_freq))
+        self.bias = nn.Parameter(torch.zeros(n, out))
+
+    def forward(self, x):
+        """(B, n) numbers to (B, n, out) embeddings."""
+        v = 2 * math.pi * x.float()[..., None] * self.freq
+        v = torch.cat([torch.sin(v), torch.cos(v)], dim=-1)
+        return torch.relu(torch.einsum("bnk,nko->bno", v, self.weight)
+                          + self.bias)
+
+
+class _Numbers(nn.Module):
+    """One token per number of the run sheet, or a missing token.
+
+    z * w + b by default, a PLR embedding when ``plr_freq`` is set.
+    """
+
+    def __init__(self, n, d, plr_freq=0):
+        super().__init__()
+        if plr_freq:
+            self.plr = _PLR(n, d, plr_freq)
+        else:
+            self.w = nn.Parameter(torch.randn(n, d) * 0.02)
+            self.b = nn.Parameter(torch.zeros(n, d))
         self.missing = nn.Parameter(torch.randn(n, d) * 0.02)
 
     def forward(self, z, known):
         known = known[..., None]
-        return known * (z[..., None] * self.w + self.b) \
-            + (1 - known) * self.missing
+        value = (self.plr(z) if hasattr(self, "plr")
+                 else z[..., None] * self.w + self.b)
+        return known * value + (1 - known) * self.missing
 
 
 class _Slots(nn.Module):
@@ -740,8 +778,18 @@ class _ExprTransformer(nn.Module):
         self.prj_emb = nn.Embedding(self.n_prj + 1, d)
         self.cond_emb = nn.Embedding(self.n_cond + 2, d)
         self.field_emb = nn.Embedding(t["n_vocab"], d)
-        self.features = nn.Linear(t["x_gene"].shape[1], d)
-        self.numbers = _Numbers(n_nums, d)
+        if cfg.num_embed not in ("linear", "plr"):
+            raise ValueError(f"unknown num_embed {cfg.num_embed}")
+        plr = cfg.num_embed == "plr"
+        # plr: each gene signal gets its own small embedding, the ESM block
+        # and the flags stay linear
+        self.n_signals = t.get("n_signals", 0) if plr else 0
+        n_feat = t["x_gene"].shape[1]
+        if self.n_signals:
+            self.signal_plr = _PLR(self.n_signals, cfg.plr_dim, cfg.plr_freq)
+            n_feat += self.n_signals * (cfg.plr_dim - 1)
+        self.features = nn.Linear(n_feat, d)
+        self.numbers = _Numbers(n_nums, d, cfg.plr_freq if plr else 0)
         self.n_tokens = len(self.SLOTS) + n_fields + n_nums
         # the frozen additive GLM (glm_eta), filled by set_glm
         self.glm_mode = cfg.glm_eta
@@ -821,6 +869,15 @@ class _ExprTransformer(nn.Module):
                  + self.glm_rho_gene[g] * f[0])
         return eta, log_r
 
+    def _gene_inputs(self, g):
+        """The gene feature vector, its signals through PLR when asked."""
+        x = self.x_gene[g].to(self.features.weight.dtype)
+        if not self.n_signals:
+            return x
+        k = self.n_signals
+        sig = self.signal_plr(x[:, :k]).flatten(1)
+        return torch.cat([sig, x[:, k:].to(sig.dtype)], dim=1)
+
     def tokens(self, g, r, gene_on, run_on, prj_on, cond_on, glm=None):
         p = self.prj_of_run[r]
         c = self.cond_of_run[r]
@@ -829,7 +886,7 @@ class _ExprTransformer(nn.Module):
         nums = self.numbers(self.run_num[r], self.run_known[r])
         parts = [
             self.gene_emb(torch.where(gene_on, g, self.n_gene))[:, None],
-            self.features(self.x_gene[g].to(self.features.weight.dtype))[:, None],
+            self.features(self._gene_inputs(g))[:, None],
             self.genome_emb(self.genome_of_gene[g])[:, None],
             self.run_emb(torch.where(run_on, r, self.n_run))[:, None],
             self.prj_emb(torch.where(prj_on, p, self.n_prj))[:, None],
@@ -966,11 +1023,12 @@ class TransformerModel:
         self.gc = _Pairs(gene, ix.cond_of_run[run], ix.n_cond)
         _gc.collect()
         cat, n_vocab, num, known = _run_tokens(samples_df)
+        x_gene, n_signals = _gene_features(self.genes, self.submission_dir,
+                                           self.log)
         self.tables = {
             "n_gene": ix.n_gene, "n_run": ix.n_run, "n_prj": ix.n_prj,
             "n_cond": ix.n_cond, "n_genome": ix.n_genome, "n_vocab": n_vocab,
-            "x_gene": _gene_features(self.genes, self.submission_dir,
-                                     self.log),
+            "x_gene": x_gene, "n_signals": n_signals,
             "genome_of_gene": ix.genome_of_gene.astype(np.int64),
             "prj_of_run": ix.prj_of_run.astype(np.int64),
             "cond_of_run": ix.cond_of_run.astype(np.int64),

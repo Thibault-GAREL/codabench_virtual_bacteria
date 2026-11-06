@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/0b3e9cc09932411f95fd72c7b82fd60e/artifacts
+end_time: 1793975763843
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: 0b3e9cc09932411f95fd72c7b82fd60e
+run_name: tf-mlp-dropout_run-01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1793975729681
+status: 3
+tags: []
+user_id: garel

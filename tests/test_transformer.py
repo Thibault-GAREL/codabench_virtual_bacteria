@@ -404,10 +404,42 @@ def test_mlp_mixer_has_no_attention():
     assert net.mixer.inp.weight.grad is not None
 
 
+def test_plr_embeds_each_number_on_its_own():
+    torch.manual_seed(0)
+    plr = T._PLR(3, 5, n_freq=4)
+    x = torch.randn(6, 3)
+    out = plr(x)
+    assert out.shape == (6, 3, 5) and (out >= 0).all()
+    # changing one number only moves its own embedding
+    y = x.clone()
+    y[:, 1] += 1.0
+    torch.testing.assert_close(plr(y)[:, [0, 2]], out[:, [0, 2]])
+
+
+def test_plr_numbers_still_read_the_missing_token():
+    nums = T._Numbers(4, 8, plr_freq=4)
+    known = torch.tensor([[1.0, 0.0, 1.0, 0.0]])
+    out = nums(torch.randn(1, 4), known)
+    torch.testing.assert_close(out[0, 1], nums.missing[1])
+    torch.testing.assert_close(out[0, 3], nums.missing[3])
+
+
+def test_plr_gene_signals_widen_the_feature_input():
+    t = {**tiny_tables(), "n_signals": 3}
+    net = T._ExprTransformer(cfg(num_embed="plr", plr_dim=4), t, tiny_bias())
+    # 7 columns, 3 of them signals of 4 numbers each: 4 + 3 * 4
+    assert net.features.in_features == 16
+    eta, log_r, _ = net(torch.tensor([0, 2]), torch.tensor([1, 3]), *flags(2))
+    assert torch.isfinite(eta).all()
+    plain = T._ExprTransformer(cfg(), t, tiny_bias())
+    assert plain.features.in_features == 7
+
+
 @pytest.mark.parametrize("variant", [
     {"glm_eta": "offset"}, {"glm_eta": "token"}, {"n_models": 2},
     {"id_bias": True, "bias_prior": 1.0}, {"out_scale": True},
-    {"mixer": "mlp", "mlp_hidden": 64}])
+    {"mixer": "mlp", "mlp_hidden": 64}, {"num_embed": "plr"},
+    {"mixer": "mlp", "mlp_hidden": 64, "num_embed": "plr", "n_models": 3}])
 def test_mu_variants_fit_and_predict(variant):
     genes, runs, train = synthetic(seed=2)
     c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,
