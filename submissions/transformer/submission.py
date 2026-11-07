@@ -193,6 +193,9 @@ class TConfig:
     # and random (gene, run) pairs whose replicates stay visible) | block
     # (whole gene x project and condition blocks, as region A hides them)
     a_holdout: str = "pair"
+    # share of the (gene, project) pairs hidden in their whole project, in
+    # the folds of count_stats and in the block holdout (_gene_blocks)
+    project_share: float = 0.0
 
 
 # The configurations this file can submit, on top of the 2017 defaults, each
@@ -226,6 +229,15 @@ PRESETS = {
     "mlp_stats2_3seeds": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                           "epochs": 8.0, "n_models": 3, "count_stats": "all",
                           "stats_sd": True, "a_holdout": "block"},
+    # one model: with the statistics, three seeds of 2.4 epochs each do no
+    # better than one of 7 epochs (local 7.411 against 7.393, 2026-11-07)
+    "mlp_stats": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
+                  "count_stats": "all"},
+    # + half of the genes hidden in their whole project in the folds and the
+    # A holdout, as region A hides them. The stats3 suite.
+    "mlp_stats3": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
+                   "count_stats": "all", "a_holdout": "block",
+                   "project_share": 0.5},
 }
 SUBMITTED = "mlp_3seeds"
 PRESET = PRESETS[SUBMITTED]
@@ -551,6 +563,25 @@ def _stat_blocks(ix):
                     ix.prj_of_run.astype(np.int64) * (ix.n_cond + 1)
                     + ix.cond_of_run, -1 - ix.exp_of_run.astype(np.int64))
     return pd.factorize(code)[0].astype(np.int64)
+
+
+def _gene_blocks(gene, run, ix, project_share=0.0):
+    """Block of each training row, for the folds and the A holdout.
+
+    The project and condition block of the run (_stat_blocks), or for a
+    share of the (gene, project) pairs the whole project. Region A sees the
+    gene in the same project for 40.5 % of its rows only: hiding gene x
+    (project, condition) blocks leaves it seen for 84.5 % of the hidden
+    rows, hiding half of the genes in their whole project for 42 %
+    (measured on the train mode, 2026-11-07).
+    """
+    blocks = _stat_blocks(ix)
+    block = blocks[run]
+    if project_share <= 0:
+        return block
+    prj = ix.prj_of_run[run].astype(np.int64)
+    whole = _hash_fold(gene, prj + 10**9, 100) < round(100 * project_share)
+    return np.where(whole, int(blocks.max()) + 1 + prj, block)
 
 
 def _hash_fold(a, b, k):
@@ -1519,7 +1550,9 @@ class TransformerModel:
                 _NEIGHBOURS[key] = cached
         (self.up_gene, self.down_gene, self.row_key, self.row_order,
          up, down) = cached
-        fold = _hash_fold(gene, _stat_blocks(ix)[run], cfg.stats_folds)
+        fold = _hash_fold(gene, _gene_blocks(gene, run, ix,
+                                             cfg.project_share),
+                          cfg.stats_folds)
         rows = {"gene": t["gene"], "run": t["run"], "y": t["y"],
                 "off": t["off"],
                 "gp": torch.as_tensor(self.gp.idx).to(dev),
@@ -1813,8 +1846,11 @@ class TransformerModel:
         free = ~hold_gene & ~hold_run
         if cfg.a_holdout == "block":
             # region A hides a gene in a whole project x condition block: no
-            # replicate of a holdout row stays visible (2026-11-07)
-            hold_block = _hash_hit(gene, _stat_blocks(ix)[run], 25) & free
+            # replicate of a holdout row stays visible (2026-11-07), and in
+            # the whole project for project_share of the pairs
+            keys = _gene_blocks(gene, run, ix, cfg.project_share)
+            hold_block = _hash_hit(gene, keys, 25) & free
+            keys = None
             hold_pair = np.zeros_like(free)
         elif cfg.a_holdout == "pair":
             block_of_run = np.where(cond >= 0, cond, ix.n_cond

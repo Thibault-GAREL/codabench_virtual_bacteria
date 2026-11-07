@@ -27,6 +27,8 @@ Suites:
               mlp: the means alone, with the neighbours, three seeds
     stats2    on top of them, internal A holdouts built like region A and
               the spreads of the gene in its project and condition
+    stats3    half of the genes hidden in their whole project, in the folds
+              and the A holdout, as region A hides them
 """
 
 import argparse
@@ -167,6 +169,16 @@ SUITES = {
         "a_block_sd": {"a_holdout": "block", "stats_sd": True},
         "a_block_sd_seeds3": {"a_holdout": "block", "stats_sd": True,
                               "n_models": 3},
+    }),
+    # 2026-11-07 c: region A sees the gene in the same project for 40.5 % of
+    # its rows, the block holdout and folds for 84.5 %: the model leans on a
+    # project mean region A mostly lacks. project_share hides that share of
+    # the (gene, project) pairs in their whole project (0.5 gives 42 %).
+    "stats3": ({"_on_preset": True, "n_models": 1, "mixer": "mlp",
+                "dropout": 0.1, "count_stats": "all", "a_holdout": "block"}, {
+        "share50": {"project_share": 0.5},
+        "share50_sd": {"project_share": 0.5, "stats_sd": True},
+        "share80": {"project_share": 0.8},
     }),
 }
 # the speed suite only needs a short fit and no refit

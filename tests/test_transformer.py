@@ -455,7 +455,9 @@ def test_plr_gene_signals_widen_the_feature_input():
     {"count_stats": "all"},
     {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "means", "n_models": 2},
     {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all", "stats_sd": True,
-     "a_holdout": "block"}])
+     "a_holdout": "block"},
+    {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all",
+     "a_holdout": "block", "project_share": 0.5}])
 def test_mu_variants_fit_and_predict(variant):
     genes, runs, train = synthetic(seed=2)
     c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,
@@ -746,3 +748,31 @@ def test_block_holdout_hides_whole_blocks_like_region_a():
     assert shared(gene, ix.exp_of_run[run], a, fit_rows).any()
     with pytest.raises(ValueError):
         holdout("maybe")
+
+
+def test_project_share_hides_genes_in_their_whole_project():
+    genes, runs, train = synthetic(seed=6)
+    runs["prj_accession"] = [f"P{i % 3}" for i in range(len(runs))]
+
+    def holdout(share):
+        model = T.TransformerModel(
+            {"feature_annotations": genes},
+            replace(T.TConfig(), a_holdout="block", project_share=share))
+        model.log = lambda message: None
+        gene, run, _, _ = model.prepare(train, runs)
+        fit_rows, groups = model._holdouts(gene, run)
+        a = groups["A"]
+        key = gene.astype(np.int64) * 10**6 + model.ix.prj_of_run[run]
+        # share of the A rows whose gene stays visible in their project
+        return model.ix, gene, run, np.isin(key[a], key[fit_rows]).mean()
+
+    ix, gene, run, seen0 = holdout(0.0)
+    _, _, _, seen5 = holdout(0.5)
+    _, _, _, seen1 = holdout(1.0)
+    assert seen1 == 0.0 and seen0 > 0.8 and seen1 < seen5 < seen0
+    # share 0 keeps the blocks, share 1 makes one key per (gene, project)
+    np.testing.assert_array_equal(T._gene_blocks(gene, run, ix, 0.0),
+                                  T._stat_blocks(ix)[run])
+    keys = pd.DataFrame({"g": gene, "p": ix.prj_of_run[run],
+                         "k": T._gene_blocks(gene, run, ix, 1.0)})
+    assert (keys.groupby(["g", "p"])["k"].nunique() == 1).all()
