@@ -5,9 +5,14 @@ entry of ``PRESETS``, and ``gene_features.npz`` (ESM-2 and the clean dataset
 signals). Nothing else of the file changes, so every zip runs the code of
 the repository.
 
+The zip is always named ``submission.zip``, as Codabench expects, in a
+folder named after the preset:
+
+    submissions/transformer/zips/<preset>/submission.zip
+
     python tools/build_submission_zip.py --list
     python tools/build_submission_zip.py --preset mlp_3seeds
-    python tools/build_submission_zip.py --preset mlp_3seeds_1024 --out my.zip
+    python tools/build_submission_zip.py --preset mlp_3seeds_1024
 """
 
 import argparse
@@ -38,8 +43,8 @@ def main():
     parser.add_argument("--preset", default=None,
                         help="entry of PRESETS (default: the SUBMITTED one)")
     parser.add_argument("--out", type=Path, default=None,
-                        help="zip path (default: next to submission.py, "
-                        "named after the preset)")
+                        help="zip path (default: zips/<preset>/submission.zip "
+                        "next to submission.py)")
     parser.add_argument("--features", type=Path, default=FEATURES)
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
@@ -58,7 +63,8 @@ def main():
     if len(line.findall(source)) != 1:
         sys.exit("submission.py must have exactly one SUBMITTED line")
     source = line.sub(f'SUBMITTED = "{name}"', source)
-    out = args.out or SUBMISSION.parent / f"submission_{name}.zip"
+    out = args.out or SUBMISSION.parent / "zips" / name / "submission.zip"
+    out.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out, "w") as zf:
         zf.writestr("submission.py", source,
                     compress_type=zipfile.ZIP_DEFLATED)
