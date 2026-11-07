@@ -121,6 +121,17 @@ N_MEAN_STATS = 8
 SD_STAT_NAMES = ["prj_sd", "cond_sd"]
 
 
+def _parse_shifts(text):
+    """The sigma_extra string "A_full=-0.3,C=-0.15" as a dict of CASES."""
+    out = {}
+    for part in filter(None, (p.strip() for p in text.split(","))):
+        name, value = (s.strip() for s in part.split("="))
+        if name not in CASES:
+            raise ValueError(f"unknown case {name} in sigma_extra")
+        out[name] = float(value)
+    return out
+
+
 def _stat_names(count_stats, stats_sd):
     """Names of the count statistics of a configuration, in token order."""
     names = {"off": [], "means": STAT_NAMES[:N_MEAN_STATS],
@@ -196,6 +207,11 @@ class TConfig:
     # share of the (gene, project) pairs hidden in their whole project, in
     # the folds of count_stats and in the block holdout (_gene_blocks)
     project_share: float = 0.0
+    # extra shift of log sigma per case, on top of the calibration on the
+    # internal holdouts: "A_full=-0.3,C=-0.15". The internal holdouts are
+    # easier than the regions, so sigma comes out too tight everywhere: the
+    # shifts are measured on the local regions of the train release
+    sigma_extra: str = ""
 
 
 # The configurations this file can submit, on top of the 2017 defaults, each
@@ -233,6 +249,17 @@ PRESETS = {
     # better than one of 7 epochs (local 7.411 against 7.393, 2026-11-07)
     "mlp_stats": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
                   "count_stats": "all"},
+    # mlp_stats with sigma widened per case by half the shifts that fit the
+    # local regions best (diagnostic of 2026-11-07 on the mlp_stats model:
+    # A_full -0.63, A_block -0.37, B_condition -0.78, B_project -0.83, B_new
+    # -0.50, C -0.29). On held-out halves of the local rows: 7.394 to 7.322
+    # at half strength, 7.301 at full strength. Half, as the platform
+    # regions look a little easier than the local ones.
+    "mlp_stats_cal": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
+                      "epochs": 8.0, "count_stats": "all",
+                      "sigma_extra": "A_full=-0.32,A_block=-0.18,"
+                                     "B_condition=-0.39,B_project=-0.41,"
+                                     "B_new=-0.25,C=-0.15"},
     # + half of the genes hidden in their whole project in the folds and the
     # A holdout, as region A hides them. The stats3 suite.
     "mlp_stats3": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
@@ -1956,6 +1983,12 @@ class TransformerModel:
                           self.gc.idx[val])
         self.delta = self._calibrate(y[val], eta.cpu().numpy(),
                                      log_r.cpu().numpy(), case)
+        extra = _parse_shifts(cfg.sigma_extra)
+        if extra:
+            self.delta = {k: v + extra.get(k, 0.0)
+                          for k, v in self.delta.items()}
+            self.log("dispersion shifts with the local regions: " + ", ".join(
+                f"{k} {v:+.2f}" for k, v in self.delta.items()))
         eta = log_r = None
 
         # 5. Refit on every row, so the holdout levels get their embeddings.

@@ -750,6 +750,35 @@ def test_block_holdout_hides_whole_blocks_like_region_a():
         holdout("maybe")
 
 
+def test_sigma_extra_parses_the_cases():
+    assert T._parse_shifts("") == {}
+    assert T._parse_shifts("A_full=-0.3, C = -0.15,") == {"A_full": -0.3,
+                                                          "C": -0.15}
+    with pytest.raises(ValueError):
+        T._parse_shifts("Z=1")
+    # every case of the cautious preset is a real case
+    shifts = T._parse_shifts(T.PRESETS["mlp_stats_cal"]["sigma_extra"])
+    assert set(shifts) <= set(T.CASES) and all(v < 0 for v in shifts.values())
+
+
+def test_sigma_extra_shifts_the_calibrated_sigma():
+    genes, runs, train = synthetic(seed=7)
+    deltas = []
+    for extra in ("", "A_full=-0.5,C=0.25"):
+        c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1,
+                    batch=1024, epochs=0.5, refit_epochs=0.0, eval_every=50,
+                    sigma_extra=extra)
+        torch.manual_seed(0)
+        model = T.TransformerModel({"feature_annotations": genes}, c)
+        model.log = lambda message: None
+        model.fit(train, runs, None)
+        deltas.append(model.delta)
+    plain, shifted = deltas
+    assert shifted["A_full"] == pytest.approx(plain["A_full"] - 0.5, abs=1e-6)
+    assert shifted["C"] == pytest.approx(plain["C"] + 0.25, abs=1e-6)
+    assert shifted["B_new"] == pytest.approx(plain["B_new"], abs=1e-6)
+
+
 def test_project_share_hides_genes_in_their_whole_project():
     genes, runs, train = synthetic(seed=6)
     runs["prj_accession"] = [f"P{i % 3}" for i in range(len(runs))]
