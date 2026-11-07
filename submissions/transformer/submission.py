@@ -265,6 +265,15 @@ PRESETS = {
     "mlp_stats3": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
                    "count_stats": "all", "a_holdout": "block",
                    "project_share": 0.5},
+    # mlp_stats3 (local 7.379, A 6.994) with half of its own sigma shifts
+    # (diagnostic of 2026-11-07: A_full -0.48, A_block +0.02, B_condition
+    # -0.68, B_project -0.91, B_new -0.44, C -0.30). The realistic A holdout
+    # already calibrates A_block. On held-out halves: 7.364 to 7.305.
+    "mlp_stats3_cal": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
+                       "epochs": 8.0, "count_stats": "all",
+                       "a_holdout": "block", "project_share": 0.5,
+                       "sigma_extra": "A_full=-0.24,B_condition=-0.34,"
+                                      "B_project=-0.45,B_new=-0.22,C=-0.15"},
 }
 SUBMITTED = "mlp_3seeds"
 PRESET = PRESETS[SUBMITTED]
