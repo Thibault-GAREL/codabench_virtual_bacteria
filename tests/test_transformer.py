@@ -188,6 +188,7 @@ def test_every_preset_is_a_valid_configuration():
     for name, preset in T.PRESETS.items():
         c = T.TConfig(**preset)
         assert c.mixer in ("attention", "mlp"), name
+        assert c.count_stats in ("off", "means", "all"), name
 
 
 def test_solver_defaults_are_the_submitted_configuration():
@@ -275,7 +276,11 @@ def synthetic(n_genome=2, n_gene=150, n_run=60, seed=0):
     genes = pd.DataFrame({
         "genome_id": np.repeat([f"G{i}" for i in range(n_genome)], n_gene),
         "feature_id": [f"f{i}" for i in range(n_genome * n_gene)],
-        "ref_genome_id": None, "ref_feature_id": None})
+        "ref_genome_id": None, "ref_feature_id": None,
+        # one chromosome per genome, genes in order, for the neighbours
+        "Chr": np.repeat([f"chr{i}" for i in range(n_genome)], n_gene),
+        "Start": np.tile(np.arange(n_gene) * 1000 + 1, n_genome),
+        "Strand": rng.choice(["+", "-"], n_genome * n_gene)})
     media = rng.choice(["LB", "M9", "TSB"], n_genome * n_run)
     runs = pd.DataFrame({
         "run_accession": [f"R{i}" for i in range(n_genome * n_run)],
@@ -446,7 +451,9 @@ def test_plr_gene_signals_widen_the_feature_input():
     {"glm_eta": "offset"}, {"glm_eta": "token"}, {"n_models": 2},
     {"id_bias": True, "bias_prior": 1.0}, {"out_scale": True},
     {"mixer": "mlp", "mlp_hidden": 64}, {"num_embed": "plr"},
-    {"mixer": "mlp", "mlp_hidden": 64, "num_embed": "plr", "n_models": 3}])
+    {"mixer": "mlp", "mlp_hidden": 64, "num_embed": "plr", "n_models": 3},
+    {"count_stats": "all"},
+    {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "means", "n_models": 2}])
 def test_mu_variants_fit_and_predict(variant):
     genes, runs, train = synthetic(seed=2)
     c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,
@@ -476,3 +483,215 @@ def test_holdout_levels_start_the_refit_from_mask():
     # no refit: every gene the fit never saw still reads the MASK vector
     for g in unseen:
         torch.testing.assert_close(w[g], w[model.net.n_gene])
+
+
+# --- statistics of the training counts (count_stats) ---------------------------
+
+def stat_rows(n_gene=8, n_run=6, k=3, seed=0):
+    """Every (gene, run) pair, two projects, two conditions on the runs 0 to
+    3 (none on 4 and 5), genome neighbours gene - 1 (up) and gene + 1."""
+    rng = np.random.default_rng(seed)
+    gene = np.repeat(np.arange(n_gene), n_run)
+    run = np.tile(np.arange(n_run), n_gene)
+    row = {(a, b): i for i, (a, b) in enumerate(zip(gene, run))}
+    arrays = {
+        "gene": gene, "run": run,
+        "y": rng.poisson(30, len(gene)).astype(np.float32),
+        "off": rng.normal(0, 0.2, len(gene)).astype(np.float32),
+        "gp": gene * 2 + run % 2,
+        "gc": np.where(run < 4, gene * 2 + run // 2, -1),
+        "fold": rng.integers(0, k, len(gene)),
+        "nb_up": np.array([row.get((a - 1, b), -1) for a, b in zip(gene, run)]),
+        "nb_down": np.array([row.get((a + 1, b), -1)
+                             for a, b in zip(gene, run)])}
+    t = {name: torch.as_tensor(v) for name, v in arrays.items()}
+    return t, (n_gene, n_run, 2 * n_gene, 2 * n_gene, k)
+
+
+def stat_model(t, sizes, vis=None, neighbours=True):
+    n_gene, n_run, n_gp, n_gc, k = sizes
+    st = T._CountStats(dict(t), n_gene, n_run, n_gp, n_gc, k, neighbours,
+                       "cpu")
+    st.build(torch.ones(len(t["y"]), dtype=torch.bool) if vis is None
+             else torch.as_tensor(vis))
+    return st
+
+
+def all_on(n):
+    return tuple(torch.ones(n, dtype=torch.bool) for _ in range(4))
+
+
+def naive_stats(t, i, vis, leave_fold=True):
+    """The statistics of row i in plain numpy, from their definitions."""
+    a = {k: v.numpy() for k, v in t.items()}
+    z = np.log(a["y"].astype(float) + 0.5) - a["off"]
+    k = a["fold"][i] if (leave_fold and vis[i]) else -1
+    use = vis & (a["fold"] != k)
+    run_mean = {r: z[vis & (a["run"] == r)].mean() for r in np.unique(a["run"])}
+    c = z - np.array([run_mean[r] for r in a["run"]])
+    out = {}
+    rr = use & (a["run"] == a["run"][i])
+    if rr.any():
+        out["run_mean"] = z[rr].mean()
+    gg = use & (a["gene"] == a["gene"][i])
+    out["gene_rows"] = np.log1p(gg.sum())
+    if gg.any():
+        out["gene_mean"] = c[gg].mean()
+    if gg.sum() > 1:
+        out["gene_sd"] = c[gg].std()
+    pp = use & (a["gp"] == a["gp"][i])
+    out["prj_rows"] = np.log1p(pp.sum())
+    if pp.any():
+        out["prj_mean"] = c[pp].mean()
+    cc = use & (a["gc"] == a["gc"][i]) & (a["gc"][i] >= 0)
+    out["cond_rows"] = np.log1p(cc.sum())
+    if cc.any():
+        out["cond_mean"] = c[cc].mean()
+    for side in ("up", "down"):
+        j = a[f"nb_{side}"][i]
+        if j >= 0 and vis[j] and a["fold"][j] != k and rr.any():
+            own = z[vis & (a["gene"] == a["gene"][j])].mean()
+            out[f"{side}_level"] = z[j] - out["run_mean"]
+            out[f"{side}_dev"] = z[j] - own
+    return out
+
+
+def test_count_stats_match_their_definitions():
+    t, sizes = stat_rows()
+    vis = np.ones(len(t["y"]), bool)
+    vis[::7] = False                 # holdout rows: they read every fold
+    st = stat_model(t, sizes, vis)
+    i = torch.arange(len(t["y"]))
+    v, kn = st.rows(i, all_on(len(i)), raw=True)
+    for row in range(len(t["y"])):
+        want = naive_stats(t, row, vis)
+        for col, name in enumerate(T.STAT_NAMES):
+            assert bool(kn[row, col]) == (name in want), (row, name)
+            if name in want:
+                assert float(v[row, col]) == pytest.approx(
+                    want[name], abs=1e-4), (row, name)
+
+
+def test_count_stats_never_read_the_row_itself():
+    t, sizes = stat_rows(seed=3)
+    i = torch.arange(len(t["y"]))
+    before, _ = stat_model(t, sizes).rows(i, all_on(len(i)), raw=True)
+    for row in (0, 13, 29, 47):
+        y = t["y"].clone()
+        y[row] = 50_000.0
+        after, _ = stat_model({**t, "y": y}, sizes).rows(
+            i, all_on(len(i)), raw=True)
+        # the row's own statistics do not move at all
+        torch.testing.assert_close(after[row], before[row], atol=1e-5, rtol=0)
+        # its count does reach other rows: the statistics are not blind
+        assert float((after - before).abs().max()) > 0.1
+
+
+def test_a_test_row_reads_every_training_row():
+    t, sizes = stat_rows(seed=4)
+    st = stat_model(t, sizes)
+    n = len(t["y"])
+    v, _ = st.external(t["gene"].long(), t["run"].long(), t["gp"].long(),
+                       t["gc"].long(), (t["nb_up"], t["nb_down"]), all_on(n))
+    for row in (0, 9, 40):
+        want = naive_stats(t, row, np.ones(n, bool), leave_fold=False)
+        for col, name in enumerate(T.STAT_NAMES):
+            if name in want:
+                assert float(v[row, col]) == pytest.approx(want[name],
+                                                           abs=1e-4)
+
+
+def test_count_stats_follow_the_hidden_levels():
+    t, sizes = stat_rows()
+    st = stat_model(t, sizes)
+    i = torch.arange(12)
+    n, on = len(i), all_on(12)
+    names = T.STAT_NAMES
+    gene_side = [names.index(x) for x in (
+        "gene_mean", "gene_sd", "gene_rows", "prj_mean", "prj_rows",
+        "cond_mean", "cond_rows")]
+    run_side = [names.index(x) for x in (
+        "run_mean", "up_level", "up_dev", "down_level", "down_dev")]
+    _, kn = st.rows(i, on)
+    off = torch.zeros(n, dtype=torch.bool)
+    # a new gene (region C) keeps its run and its neighbours
+    _, kg = st.rows(i, (off,) + on[1:])
+    assert kg[:, gene_side].sum() == 0
+    torch.testing.assert_close(kg[:, run_side], kn[:, run_side])
+    # a new run (region B) keeps the gene, loses the run and the neighbours
+    _, kr = st.rows(i, (on[0], off) + on[2:])
+    assert kr[:, run_side].sum() == 0
+    torch.testing.assert_close(kr[:, gene_side], kn[:, gene_side])
+
+
+def test_a_neighbour_of_the_same_fold_is_hidden():
+    t, sizes = stat_rows()
+    row = 20                         # gene 3 in run 2
+    j = int(t["nb_up"][row])
+    col = T.STAT_NAMES.index("up_level")
+    for nb_fold, seen in ((int(t["fold"][row]), 0),
+                          ((int(t["fold"][row]) + 1) % 3, 1)):
+        fold = t["fold"].clone()
+        fold[j] = nb_fold
+        _, kn = stat_model({**t, "fold": fold}, sizes).rows(
+            torch.tensor([row]), all_on(1))
+        assert int(kn[0, col]) == seen
+
+
+def test_means_alone_have_no_neighbours():
+    t, sizes = stat_rows()
+    st = stat_model(t, sizes, neighbours=False)
+    v, kn = st.rows(torch.arange(5), all_on(5))
+    assert v.shape == (5, T.N_MEAN_STATS) and kn.shape == (5, T.N_MEAN_STATS)
+
+
+def test_neighbours_follow_the_reading_direction():
+    genes = pd.DataFrame({
+        "genome_id": ["G"] * 4 + ["H"] * 2,
+        "Chr": ["c1", "c1", "c1", "c1;x", "c2", "c2"],
+        "Start": [300, 100, "200;250", 400, 50, 10],
+        "Strand": ["+", "+", "-", "-", "+", "-"]})
+    up, down, up_same, down_same = T._neighbours(genes)
+    # on G|c1 the order is 1, 2, 0, 3: upstream is before on +, after on -
+    assert up.tolist() == [2, -1, 0, -1, 5, 4]
+    assert down.tolist() == [3, 2, 1, 0, -1, -1]
+    assert not up_same.any() and not down_same.any()
+    same = pd.DataFrame({"genome_id": ["G"] * 3, "Chr": ["c"] * 3,
+                         "Start": [1, 2, 3], "Strand": ["+"] * 3})
+    up, down, up_same, down_same = T._neighbours(same)
+    assert up.tolist() == [-1, 0, 1] and up_same.tolist() == [False, True, True]
+    # no coordinates, no neighbours
+    up, down, _, _ = T._neighbours(genes[["genome_id"]])
+    assert (up == -1).all() and (down == -1).all()
+
+
+def test_folds_hide_whole_blocks():
+    gene = np.repeat(np.arange(50), 40)
+    block = np.tile(np.arange(40), 50) // 4      # 4 runs per block
+    fold = T._hash_fold(gene, block, 4)
+    assert set(np.unique(fold)) == {0, 1, 2, 3}
+    # one fold per (gene, block), whatever the run
+    pairs = pd.DataFrame({"g": gene, "b": block, "f": fold})
+    assert (pairs.groupby(["g", "b"])["f"].nunique() == 1).all()
+
+
+def test_count_stats_add_one_token_each():
+    base = T._ExprTransformer(cfg(), tiny_tables(), tiny_bias())
+    for mode, n in (("means", T.N_MEAN_STATS), ("all", len(T.STAT_NAMES))):
+        net = T._ExprTransformer(cfg(count_stats=mode), tiny_tables(),
+                                 tiny_bias()).eval()
+        assert net.n_tokens == base.n_tokens + n
+    torch.manual_seed(0)
+    with torch.no_grad():
+        net.head.weight.normal_()
+    g, r = torch.tensor([0, 3]), torch.tensor([1, 4])
+    none, _, _ = net(g, r, *flags(2))
+    z = torch.randn(2, n)
+    given, _, _ = net(g, r, *flags(2), stats=(z, torch.ones(2, n)))
+    assert not torch.allclose(none, given)
+    # every statistic unknown: the missing tokens, as without statistics
+    hidden, _, _ = net(g, r, *flags(2), stats=(z, torch.zeros(2, n)))
+    torch.testing.assert_close(hidden, none)
+    with pytest.raises(ValueError):
+        T._ExprTransformer(cfg(count_stats="maybe"), tiny_tables(),
+                           tiny_bias())

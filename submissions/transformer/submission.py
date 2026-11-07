@@ -21,6 +21,14 @@
 - ``mixer=mlp`` replaces the attention blocks by one residual MLP over the
   flattened tokens, to measure what the attention brings. ``out_scale`` puts
   the head output of log mu in units of the spread of the target.
+- ``count_stats`` adds statistics of the training counts as inputs, one
+  token each (``_CountStats``): the mean level of the run, of the gene, of
+  the gene in the project and in the condition, and the level of the two
+  genome neighbours of the gene in the same run. A learned embedding needs
+  many steps to learn a gene's level, these means are exact from the start.
+  None of them ever reads the row's own count: each training row only sees
+  the folds its block (gene x project and condition) is not in, the way the
+  region A hides its rows.
 - Every component of the 2017 Transformer that Modern_LLM replaces is a flag
   of ``TConfig``, off by default, so each one can be measured alone
   (``tools/ablate.py``): pre-norm, RMSNorm, DyT, SwiGLU, GeGLU, GQA, MQA,
@@ -97,6 +105,14 @@ GPU_CHUNK = 2_000_000
 # Prepared tables kept across fits of one process, see TransformerModel.prepare
 KEEP_ENV = "BACTERIA_KEEP_PREPARED"
 _PREPARED = {}
+# Neighbour rows of the training rows, kept like _PREPARED (count_stats)
+_NEIGHBOURS = {}
+# The inputs of count_stats, the first N_MEAN_STATS without the neighbours.
+# Means on z = log(y + 0.5) - offset, the gene ones on z minus the run mean.
+STAT_NAMES = ["run_mean", "gene_mean", "gene_sd", "gene_rows", "prj_mean",
+              "prj_rows", "cond_mean", "cond_rows", "up_level", "up_dev",
+              "down_level", "down_dev"]
+N_MEAN_STATS = 8
 
 
 @dataclass
@@ -156,6 +172,9 @@ class TConfig:
     num_embed: str = "linear"      # linear | plr: periodic embeddings of the numbers
     plr_freq: int = 8              # frequencies per number (plr)
     plr_dim: int = 8               # size of each gene signal embedding (plr)
+    # statistics of the training counts as inputs (2026-11-07)
+    count_stats: str = "off"       # off | means | all (means + neighbours)
+    stats_folds: int = 4           # folds of blocks, 1 hidden from each row
 
 
 # The configurations this file can submit, on top of the 2017 defaults, each
@@ -180,6 +199,10 @@ PRESETS = {
     # same suite: three wider MLP 2x1024 without dropout. Local 7.486.
     "mlp_3seeds_1024": {**_SOCLE, "mixer": "mlp", "mlp_hidden": 1024,
                         "epochs": 8.0, "n_models": 3},
+    # 2026-11-07: mlp_3seeds with the statistics of the training counts as
+    # inputs (count_stats). Not measured yet, the stats suite of ablate.py.
+    "mlp_stats_3seeds": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
+                         "epochs": 8.0, "n_models": 3, "count_stats": "all"},
 }
 SUBMITTED = "mlp_3seeds"
 PRESET = PRESETS[SUBMITTED]
@@ -453,6 +476,254 @@ class _Pairs:
         found = ((self.sorted[pos] == code) & (gene >= 0) & (group >= 0)
                  if self.n else np.zeros(len(code), dtype=bool))
         return np.where(found, self.order[pos] if self.n else -1, -1)
+
+
+# --- statistics of the training counts (count_stats) ------------------------
+
+def _neighbours(genes):
+    """Upstream and downstream gene of each gene on its replicon, -1 if none.
+
+    Upstream is the 5' side in the gene's own reading direction: the gene
+    before it on the + strand, the gene after it on the - strand. A split
+    gene (coordinates "a;b") starts at its first part. Also returns whether
+    each neighbour reads on the same strand, as an operon partner does.
+    """
+    n = len(genes)
+    none = np.full(n, -1, dtype=np.int64)
+    if not {"Chr", "Start", "Strand"} <= set(genes.columns):
+        return none, none.copy(), np.zeros(n, bool), np.zeros(n, bool)
+    start = pd.to_numeric(genes["Start"], errors="coerce").to_numpy(float)
+    for i in np.flatnonzero(np.isnan(start)):
+        parts = re.findall(r"\d+", str(genes["Start"].iat[i]))
+        start[i] = min(float(p) for p in parts) if parts else np.nan
+    chrom = (genes["genome_id"].astype(str) + "|"
+             + genes["Chr"].astype(str).str.split(";").str[0])
+    code = pd.factorize(chrom)[0]
+    plus = genes["Strand"].astype(str).str[:1].to_numpy() == "+"
+    ok = ~np.isnan(start)
+    order = np.lexsort((np.where(ok, start, 0.0), code))
+    order = order[ok[order]]
+    same = code[order[1:]] == code[order[:-1]]
+    prev, nxt = none.copy(), none.copy()
+    prev[order[1:][same]] = order[:-1][same]
+    nxt[order[:-1][same]] = order[1:][same]
+    up = np.where(plus, prev, nxt)
+    down = np.where(plus, nxt, prev)
+
+    def same_strand(nb):
+        return (nb >= 0) & (plus[np.maximum(nb, 0)] == plus)
+
+    return up, down, same_strand(up), same_strand(down)
+
+
+def _stat_blocks(ix):
+    """Block of each run for the folds: its project and condition, or its
+    experiment when it has no sheet. Region A hides a gene in a whole block:
+    12 % of its rows have the gene seen in the same project and condition,
+    none in the same experiment (measured on the train mode, 2026-11-07)."""
+    code = np.where(ix.cond_of_run >= 0,
+                    ix.prj_of_run.astype(np.int64) * (ix.n_cond + 1)
+                    + ix.cond_of_run, -1 - ix.exp_of_run.astype(np.int64))
+    return pd.factorize(code)[0].astype(np.int64)
+
+
+def _hash_fold(a, b, k):
+    """Fold in [0, k) of each (a, b) pair, a hash unrelated to _hash_hit."""
+    out = np.empty(len(a), dtype=np.int8)
+    for s in range(0, len(a), CHUNK):
+        h = (a[s:s + CHUNK].astype(np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+             + b[s:s + CHUNK].astype(np.uint64) * np.uint64(0xC2B2AE3D27D4EB4F))
+        h ^= h >> np.uint64(31)
+        h *= np.uint64(0xBF58476D1CE4E5B9)
+        h ^= h >> np.uint64(29)
+        out[s:s + CHUNK] = (h % np.uint64(k)).astype(np.int8)
+    return out
+
+
+def _row_lookup(gene, run, n_run):
+    """Keys gene * n_run + run of the training rows, sorted, and their rows."""
+    key = gene.astype(np.int64) * n_run + run
+    order = np.argsort(key, kind="stable")
+    return key[order], order.astype(np.int32)
+
+
+def _find_rows(sorted_key, order, of_gene, gene, run, n_run):
+    """Training row of the pair (of_gene[gene], run), -1 when absent."""
+    out = np.full(len(gene), -1, dtype=np.int32)
+    if not len(sorted_key):
+        return out
+    for s in range(0, len(gene), CHUNK):
+        g = gene[s:s + CHUNK].astype(np.int64)
+        r = run[s:s + CHUNK].astype(np.int64)
+        nb = np.where(g >= 0, of_gene[np.maximum(g, 0)], -1)
+        key = nb * n_run + r
+        pos = np.minimum(np.searchsorted(sorted_key, key), len(sorted_key) - 1)
+        hit = (nb >= 0) & (r >= 0) & (sorted_key[pos] == key)
+        out[s:s + CHUNK] = np.where(hit, order[pos], -1)
+    return out
+
+
+class _CountStats:
+    """Statistics of the training counts as inputs, never of the row itself.
+
+    On z = log(y + 0.5) - offset, from the visible training rows:
+
+    - ``run_mean``: mean z of the run, its level over all its genes;
+    - ``gene_mean``, ``gene_sd``, ``gene_rows``: the gene on z minus the run
+      mean (c), its mean, spread and log1p row count over every run;
+    - ``prj_mean``, ``cond_mean`` (and their row counts): the mean c of the
+      gene in the same project, in the same condition;
+    - ``up_level``, ``down_level``: z of the two genome neighbours of the
+      gene in the same run, minus the run mean;
+    - ``up_dev``, ``down_dev``: the same z minus the neighbour's own mean z,
+      how much more its operon is on in this run than usual.
+
+    No leakage: every training row is in one of ``k`` folds, drawn per
+    (gene, block) as region A hides its rows (see _stat_blocks). A training
+    row only sums the other folds, so its own count, and those of its whole
+    block, never enter its statistics, and a neighbour of its own fold is
+    hidden. The neighbour's own mean uses raw z, not c: c is centred by a
+    run mean that holds the row. A row outside the visible ones (a holdout,
+    a test row) reads every visible row, as a test row will.
+    """
+
+    def __init__(self, rows, n_gene, n_run, n_gp, n_gc, k, neighbours,
+                 device):
+        # device tensors over the training rows: gene, run, y, off, gp, gc,
+        # fold, nb_up, nb_down
+        self.r = rows
+        self.k = k
+        self.size = {"run": n_run, "gene": n_gene, "gp": max(n_gp, 1),
+                     "gc": max(n_gc, 1)}
+        self.neighbours = neighbours
+        self.n_stats = len(STAT_NAMES) if neighbours else N_MEAN_STATS
+        self.device = device
+        self.center = torch.zeros(self.n_stats, device=device)
+        self.scale = torch.ones(self.n_stats, device=device)
+        self.folds = torch.arange(k, device=device)
+        self.vis = None
+
+    def _z(self, i):
+        return (torch.log(self.r["y"][i].float() + 0.5)
+                - self.r["off"][i].float())
+
+    @torch.no_grad()
+    def build(self, vis):
+        """Sums per level and per fold over the visible rows ``vis``."""
+        K, dev, r = self.k, self.device, self.r
+        self.vis = vis
+        sel = torch.nonzero(vis).flatten()
+
+        def table(name, n_sums):
+            return [torch.zeros(self.size[name] * K, device=dev)
+                    for _ in range(n_sums)]
+
+        run = table("run", 2)
+        for s in range(0, len(sel), GPU_CHUNK):
+            i = sel[s:s + GPU_CHUNK]
+            flat = r["run"][i].long() * K + r["fold"][i].long()
+            run[0].index_add_(0, flat, self._z(i))
+            run[1].index_add_(0, flat, torch.ones(len(i), device=dev))
+        self.run = [v.view(-1, K) for v in run]
+        run_mean = self.run[0].sum(1) / self.run[1].sum(1).clamp(min=1)
+        # gene: sum c, sum c^2, rows, sum z (the neighbours' own mean)
+        gene, gp, gc = table("gene", 4), table("gp", 2), table("gc", 2)
+        for s in range(0, len(sel), GPU_CHUNK):
+            i = sel[s:s + GPU_CHUNK]
+            f = r["fold"][i].long()
+            z = self._z(i)
+            c = z - run_mean[r["run"][i].long()]
+            one = torch.ones_like(c)
+            flat = r["gene"][i].long() * K + f
+            for v, x in zip(gene, (c, c * c, one, z), strict=True):
+                v.index_add_(0, flat, x)
+            for pairs, idx in ((gp, r["gp"][i].long()), (gc, r["gc"][i].long())):
+                ok = idx >= 0
+                flat = idx[ok] * K + f[ok]
+                pairs[0].index_add_(0, flat, c[ok])
+                pairs[1].index_add_(0, flat, one[ok])
+        self.gene, self.gp, self.gc = ([v.view(-1, K) for v in t]
+                                       for t in (gene, gp, gc))
+        self.gene_z = self.gene[3].sum(1) / self.gene[2].sum(1).clamp(min=1)
+
+    def _other_folds(self, table, idx, k):
+        """Sum of ``table`` at ``idx`` over the folds other than ``k`` (all of
+        them when k < 0), 0 where ``idx`` is -1. The row's own fold is left
+        out of the arithmetic, not subtracted afterwards."""
+        v = table[idx.clamp(min=0)]
+        keep = self.folds[None, :] != k[:, None]
+        total = (v * keep).sum(1)
+        return torch.where(idx >= 0, total, torch.zeros_like(total))
+
+    @torch.no_grad()
+    def features(self, g, r, gp, gc, k, nb, on, raw=False):
+        """(values, known) of the rows, (B, n_stats) each.
+
+        ``k`` is the fold to leave out (-1: none), ``nb`` the training rows of
+        the two neighbours (-1: none), ``on`` the visible id levels: a hidden
+        gene loses its gene, project and condition means, a hidden run its
+        run mean and its neighbours, as a new gene or a new run would.
+        """
+        gene_on, run_on, prj_on, cond_on = on
+        n_r = self._other_folds(self.run[1], r, k)
+        rm = self._other_folds(self.run[0], r, k) / n_r.clamp(min=1)
+        n_g = self._other_folds(self.gene[2], g, k)
+        m_g = self._other_folds(self.gene[0], g, k) / n_g.clamp(min=1)
+        sq = self._other_folds(self.gene[1], g, k) / n_g.clamp(min=1)
+        sd_g = (sq - m_g ** 2).clamp(min=0).sqrt()
+        n_p = self._other_folds(self.gp[1], gp, k)
+        m_p = self._other_folds(self.gp[0], gp, k) / n_p.clamp(min=1)
+        n_c = self._other_folds(self.gc[1], gc, k)
+        m_c = self._other_folds(self.gc[0], gc, k) / n_c.clamp(min=1)
+        prj, cond = gene_on & prj_on, gene_on & cond_on
+        vals = [rm, m_g, sd_g, torch.log1p(n_g), m_p, torch.log1p(n_p), m_c,
+                torch.log1p(n_c)]
+        known = [(n_r > 0) & run_on, (n_g > 0) & gene_on,
+                 (n_g > 1) & gene_on, gene_on, (n_p > 0) & prj, prj,
+                 (n_c > 0) & cond, cond]
+        if self.neighbours:
+            for j in nb:
+                jj = j.clamp(min=0).long()
+                ok = ((j >= 0) & self.vis[jj] & run_on & (n_r > 0)
+                      & (self.r["fold"][jj].long() != k))
+                z = self._z(jj)
+                vals += [z - rm, z - self.gene_z[self.r["gene"][jj].long()]]
+                known += [ok, ok]
+        v = torch.stack(vals, 1).float()
+        kn = torch.stack(known, 1)
+        if not raw:
+            v = ((v - self.center) / self.scale).clamp(-8, 8)
+        return torch.where(kn, v, torch.zeros_like(v)), kn.float()
+
+    def rows(self, i, on, raw=False):
+        """Statistics of the training rows ``i``: a visible row leaves its
+        own fold out, a holdout row reads every visible row."""
+        r = self.r
+        k = torch.where(self.vis[i], r["fold"][i].long(),
+                        torch.full_like(i, -1))
+        return self.features(r["gene"][i].long(), r["run"][i].long(),
+                             r["gp"][i].long(), r["gc"][i].long(), k,
+                             (r["nb_up"][i], r["nb_down"][i]), on, raw)
+
+    def external(self, g, r, gp, gc, nb, on):
+        """Statistics of rows outside the training rows (the test rows)."""
+        return self.features(g, r, gp, gc, torch.full_like(g, -1), nb, on)
+
+    @torch.no_grad()
+    def fit_scale(self, i):
+        """Centre and spread of each statistic on the training rows ``i``."""
+        on = tuple(torch.ones(len(i), dtype=torch.bool, device=self.device)
+                   for _ in range(4))
+        v, kn = self.rows(i, on, raw=True)
+        cnt = kn.sum(0).clamp(min=1)
+        mean = (v * kn).sum(0) / cnt
+        var = (((v - mean) * kn) ** 2).sum(0) / cnt
+        self.center, self.scale = mean, var.sqrt().clamp(min=1e-3)
+
+    def for_predict(self):
+        """Drops what only the training rows need, once the fit is done."""
+        for name in ("run", "gp", "gc", "nb_up", "nb_down"):
+            self.r.pop(name, None)
 
 
 # --- layers, each with its 2017 alternative --------------------------------
@@ -822,6 +1093,15 @@ class _ExprTransformer(nn.Module):
             # two numbers: the GLM log mu and log sigma of the row
             self.glm_tokens = _Numbers(2, d)
             self.n_tokens += 2
+        # the statistics of the training counts, one token each, the
+        # missing token when a statistic does not exist for the row
+        sizes = {"off": 0, "means": N_MEAN_STATS, "all": len(STAT_NAMES)}
+        if cfg.count_stats not in sizes:
+            raise ValueError(f"unknown count_stats {cfg.count_stats}")
+        self.n_stats = sizes[cfg.count_stats]
+        if self.n_stats:
+            self.stat_tokens = _Numbers(self.n_stats, d)
+            self.n_tokens += self.n_stats
         self.slots = _Slots(self.n_tokens, d)
         self.drop = nn.Dropout(cfg.dropout)
         if cfg.mixer not in ("attention", "mlp"):
@@ -891,7 +1171,8 @@ class _ExprTransformer(nn.Module):
         sig = self.signal_plr(x[:, :k]).flatten(1)
         return torch.cat([sig, x[:, k:].to(sig.dtype)], dim=1)
 
-    def tokens(self, g, r, gene_on, run_on, prj_on, cond_on, glm=None):
+    def tokens(self, g, r, gene_on, run_on, prj_on, cond_on, glm=None,
+               stats=None):
         p = self.prj_of_run[r]
         c = self.cond_of_run[r]
         c_tok = torch.where(c < 0, self.n_cond + 1,
@@ -912,6 +1193,12 @@ class _ExprTransformer(nn.Module):
             z = torch.stack([(glm[0] - c0[0]) / c0[1],
                              (glm[1] - c0[2]) / c0[3]], dim=1)
             parts.append(self.glm_tokens(z, torch.ones_like(z)))
+        if self.n_stats:
+            if stats is None:
+                # no statistics given: every one reads its missing token
+                z = torch.zeros(len(g), self.n_stats, device=g.device)
+                stats = (z, z)
+            parts.append(self.stat_tokens(*stats))
         x = torch.cat([part.to(nums.dtype) for part in parts], dim=1)
         return self.drop(self.slots(x))
 
@@ -919,11 +1206,14 @@ class _ExprTransformer(nn.Module):
         return self.bias(g, r, self.genome_of_gene[g], self.prj_of_run[r],
                          gene_on, run_on, prj_on)
 
-    def forward(self, g, r, gene_on, run_on, prj_on, cond_on):
-        """log mu without the offset, log sigma, auxiliary loss."""
+    def forward(self, g, r, gene_on, run_on, prj_on, cond_on, stats=None):
+        """log mu without the offset, log sigma, auxiliary loss.
+
+        ``stats`` is the (values, known) pair of _CountStats (count_stats).
+        """
         glm = (self.glm_terms(g, r, gene_on, run_on, prj_on, cond_on)
                if self.glm_mode != "off" else None)
-        x = self.tokens(g, r, gene_on, run_on, prj_on, cond_on, glm)
+        x = self.tokens(g, r, gene_on, run_on, prj_on, cond_on, glm, stats)
         if self.cfg.mixer == "mlp":
             h = self.mixer(x)
         else:
@@ -996,6 +1286,8 @@ class TransformerModel:
         # factory(module) -> LayerStats, set by the harness to log layer/...
         self.layer_stats = None
         self.net = None
+        # _CountStats of the fit (count_stats), None when off
+        self.stats = None
 
     # --- data ---------------------------------------------------------
 
@@ -1008,6 +1300,7 @@ class TransformerModel:
         kept for the next fit on the same rows. The platform fits once.
         """
         key = (id(train_df), len(train_df), id(samples_df))
+        self._prep_key = key
         if key in _PREPARED:
             (self.ix, self.gp, self.gc, self.tables, self.family,
              self.n_family, out) = _PREPARED[key]
@@ -1166,6 +1459,56 @@ class TransformerModel:
         return [float(eta.mean()), float(eta.std().clamp(min=1e-3)),
                 float(log_r.mean()), float(log_r.std().clamp(min=1e-3))]
 
+    def _count_stats(self, gene, run, fit_rows):
+        """The _CountStats of the training rows, its tables on the fit rows.
+
+        The neighbour rows (the training row of each genome neighbour in the
+        same run) are found once and kept like the prepared tables.
+        """
+        cfg, dev, ix, t = self.cfg, self.device, self.ix, self.t
+        t_start = time.time()
+        key = getattr(self, "_prep_key", None)
+        if key is not None and key in _NEIGHBOURS:
+            cached = _NEIGHBOURS[key]
+        else:
+            up_gene, down_gene, _, _ = _neighbours(self.genes)
+            row_key, row_order = _row_lookup(gene, run, ix.n_run)
+            cached = (up_gene, down_gene, row_key, row_order,
+                      _find_rows(row_key, row_order, up_gene, gene, run,
+                                 ix.n_run),
+                      _find_rows(row_key, row_order, down_gene, gene, run,
+                                 ix.n_run))
+            if os.environ.get(KEEP_ENV) == "1":
+                _NEIGHBOURS.clear()
+                _NEIGHBOURS[key] = cached
+        (self.up_gene, self.down_gene, self.row_key, self.row_order,
+         up, down) = cached
+        fold = _hash_fold(gene, _stat_blocks(ix)[run], cfg.stats_folds)
+        rows = {"gene": t["gene"], "run": t["run"], "y": t["y"],
+                "off": t["off"],
+                "gp": torch.as_tensor(self.gp.idx).to(dev),
+                "gc": torch.as_tensor(self.gc.idx).to(dev),
+                "fold": torch.as_tensor(fold).to(dev),
+                "nb_up": torch.as_tensor(up).to(dev),
+                "nb_down": torch.as_tensor(down).to(dev)}
+        stats = _CountStats(rows, ix.n_gene, ix.n_run, self.gp.n, self.gc.n,
+                            cfg.stats_folds, cfg.count_stats == "all", dev)
+        stats.build(torch.as_tensor(fit_rows).to(dev))
+        some = np.flatnonzero(fit_rows)
+        some = some[::max(1, len(some) // 200_000)]
+        stats.fit_scale(torch.as_tensor(some).to(dev))
+        found = float(np.mean((up >= 0) | (down >= 0)))
+        self.log(f"count stats: {stats.n_stats} inputs, {cfg.stats_folds} "
+                 f"folds of gene x block, a neighbour row for {found:.0%} of "
+                 f"the rows ({time.time() - t_start:.0f}s), "
+                 + (f"GPU {torch.cuda.memory_allocated() / 1e9:.2f} GB, "
+                    if dev != "cpu" else "") + _ram())
+        return stats
+
+    def _stat_inputs(self, i, on):
+        """Count statistics of the training rows ``i``, None when off."""
+        return self.stats.rows(i, on) if self.stats is not None else None
+
     def _seen(self, gene, run, rows):
         """Levels seen in ``rows``, as numpy and as device masks."""
         ix = self.ix
@@ -1222,7 +1565,7 @@ class TransformerModel:
             # effects
             matrix = p.dim() == 2 and not name.startswith(
                 ("gene_emb", "genome_emb", "run_emb", "prj_emb", "cond_emb",
-                 "field_emb", "slots.", "numbers.", "bias."))
+                 "field_emb", "slots.", "numbers.", "stat_tokens.", "bias."))
             (decay if matrix else rest).append(p)
         return torch.optim.AdamW(
             [{"params": decay, "weight_decay": cfg.weight_decay},
@@ -1265,8 +1608,10 @@ class TransformerModel:
         for s in range(0, len(idx), EVAL_CHUNK):
             i = idx[s:s + EVAL_CHUNK]
             g, r = t["gene"][i].long(), t["run"][i].long()
+            on = self._on(g, r, seen_dev)
+            st = self._stat_inputs(i, on)
             with self._amp():
-                eta, log_r, _ = net(g, r, *self._on(g, r, seen_dev))
+                eta, log_r, _ = net(g, r, *on, stats=st)
             etas.append(eta.float() + t["off"][i])
             logs.append(log_r.float())
         net.train(was)
@@ -1327,8 +1672,10 @@ class TransformerModel:
             c = net.cond_of_run[r]
             on = (~cold_gene[g], ~cold_run[r], ~cold_prj[net.prj_of_run[r]],
                   ~cold_cond[c.clamp(min=0)] & (c >= 0))
+            # the level dropout hides the statistics of a cold level too
+            st = self._stat_inputs(i, on)
             with self._amp():
-                eta, log_r, aux = net(g, r, *on)
+                eta, log_r, aux = net(g, r, *on, stats=st)
             nll = _nb_nll_torch(t["y"][i], eta.float() + t["off"][i],
                                 log_r.float()).mean()
             loss = nll + cfg.moe_aux * aux
@@ -1447,6 +1794,10 @@ class TransformerModel:
                   "y": torch.as_tensor(y).to(dev),
                   "off": torch.as_tensor(off).to(dev)}
         self.family_dev = torch.as_tensor(self.family).long().to(dev)
+        # statistics of the counts, on the fit rows only: a holdout row
+        # reads them as a test row will read those of every training row
+        self.stats = (self._count_stats(gene, run, fit_rows)
+                      if cfg.count_stats != "off" else None)
         bias = self._bias_init(gene, run, y, off, fit_rows)
         self.net = _ExprTransformer(cfg, self.tables, bias).to(dev)
         # out_scale: the head predicts log mu in units of the spread of
@@ -1528,6 +1879,11 @@ class TransformerModel:
         if glm is not None:
             glm = self._fit_glm(gene, run, y, off, all_rows,
                                 cfg.glm_refit_steps, "glm refit", init=glm)
+        if self.stats is not None:
+            # every row visible now, each still without its own fold. The
+            # centre and spread of the inputs stay those of the fit.
+            self.stats.build(torch.ones(len(y), dtype=torch.bool,
+                                        device=dev))
         t_ref = time.time()
         for k, net in enumerate(self.nets):
             self.net, self._seed = net, cfg.seed + k
@@ -1547,6 +1903,8 @@ class TransformerModel:
         # row ids of the pairs stay when the next fit reuses them.
         if os.environ.get(KEEP_ENV) != "1":
             self.gp.idx = self.gc.idx = None
+        if self.stats is not None:
+            self.stats.for_predict()
         self.t = None
         _gc.collect()
         if dev != "cpu":
@@ -1624,6 +1982,16 @@ class TransformerModel:
                             np.where(run >= 0, self.ix.cond_of_run[ri], -1))
         case = self._case(self.seen, gene, run, gp, gc)
         shifts = np.array([self.delta[name] for name in CASES])
+        stats = getattr(self, "stats", None)
+        if stats is not None:
+            # the training rows of the two genome neighbours in the same run
+            nb = [_find_rows(self.row_key, self.row_order, of, gene, run,
+                             self.ix.n_run)
+                  for of in (self.up_gene, self.down_gene)]
+
+        def dev_slice(a, s, e):
+            return torch.as_tensor(np.asarray(a[s:e])).long().to(dev)
+
         out = np.empty((n, 2))
         for s in range(0, n, EVAL_CHUNK):
             e = s + EVAL_CHUNK
@@ -1632,10 +2000,14 @@ class TransformerModel:
             on = self._on(g, r, self.seen_dev)
             known = torch.as_tensor(~bad[s:e]).to(dev)
             on = tuple(o & known for o in on)
+            st = (stats.external(g, r, dev_slice(gp, s, e),
+                                 dev_slice(gc, s, e),
+                                 [dev_slice(a, s, e) for a in nb], on)
+                  if stats is not None else None)
             outs = []
             for net in nets:
                 with self._amp():
-                    eta, log_r, _ = net(g, r, *on)
+                    eta, log_r, _ = net(g, r, *on, stats=st)
                 outs.append((eta.float(), log_r.float()))
             eta, log_r = _mix(*zip(*outs, strict=True))
             eta = eta.float().cpu().numpy() + off[s:e]

@@ -23,6 +23,8 @@ Suites:
               mixer, one head, the sizes, and one long run
     mlp       the attention-free mlp at the T4 hour: depth, width,
               activation, dropout, out_scale, token size, PLR, three seeds
+    stats     the statistics of the training counts as inputs of the best
+              mlp: the means alone, with the neighbours, three seeds
 """
 
 import argparse
@@ -136,6 +138,20 @@ SUITES = {
         "d32": {"d_model": 32},
         "plr": {"num_embed": "plr"},
         "seeds3": {"n_models": 3},
+    }),
+    # 2026-11-07: the statistics of the training counts as inputs of the
+    # best mlp (2x512, dropout 0.1), without leakage (count_stats). Run with
+    # --max-minutes 16.7 --epochs 8 --layer-every 0: the A40 is 2.4 times
+    # the T4 on the mlp. means: run, gene, gene x project, gene x condition,
+    # all: plus the two genome neighbours in the same run. folds3 hides one
+    # block in 3 instead of 4 from each row, closer to the 30 % of region A.
+    "stats": ({"_on_preset": True, "n_models": 1, "mixer": "mlp",
+               "dropout": 0.1}, {
+        "ref": {},
+        "means": {"count_stats": "means"},
+        "all": {"count_stats": "all"},
+        "all_folds3": {"count_stats": "all", "stats_folds": 3},
+        "all_seeds3": {"count_stats": "all", "n_models": 3},
     }),
 }
 # the speed suite only needs a short fit and no refit

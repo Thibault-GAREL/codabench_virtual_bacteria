@@ -290,6 +290,16 @@ def describe_transformer(net, cfg, tables):
         sources["children"].append(node(
             "η du GLM", "linear", module="glm_tokens",
             info=["log μ et log σ du GLM gelé", "masqués comme les ids"]))
+    if getattr(net, "n_stats", 0):
+        sources["children"].append(node(
+            "Statistiques des comptages", "linear", module="stat_tokens",
+            info=[f"{net.n_stats} nombres, un token chacun",
+                  "run, gène, gène × projet, gène × condition"
+                  + (", voisins" if net.n_stats > 8 else "")],
+            doc="Moyennes exactes des comptages d'entraînement. Une ligne "
+                "d'entraînement ne lit jamais son propre bloc (gène × projet "
+                "et condition) : pas de fuite. Une statistique absente (gène "
+                "ou run nouveau) lit un token manquant appris."))
     tokens = node("Tokens", "stack", scale=2,
                   info=[f"{net.n_tokens} tokens de {d}"],
                   children=[sources, node("Concat", "concat"),
