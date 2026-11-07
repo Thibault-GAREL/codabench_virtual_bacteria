@@ -295,7 +295,8 @@ def describe_transformer(net, cfg, tables):
             "Statistiques des comptages", "linear", module="stat_tokens",
             info=[f"{net.n_stats} nombres, un token chacun",
                   "run, gène, gène × projet, gène × condition"
-                  + (", voisins" if net.n_stats > 8 else "")],
+                  + (", voisins" if cfg.count_stats == "all" else "")
+                  + (", écarts-types" if cfg.stats_sd else "")],
             doc="Moyennes exactes des comptages d'entraînement. Une ligne "
                 "d'entraînement ne lit jamais son propre bloc (gène × projet "
                 "et condition) : pas de fuite. Une statistique absente (gène "

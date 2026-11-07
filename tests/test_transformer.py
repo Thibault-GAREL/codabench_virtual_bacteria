@@ -453,7 +453,9 @@ def test_plr_gene_signals_widen_the_feature_input():
     {"mixer": "mlp", "mlp_hidden": 64}, {"num_embed": "plr"},
     {"mixer": "mlp", "mlp_hidden": 64, "num_embed": "plr", "n_models": 3},
     {"count_stats": "all"},
-    {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "means", "n_models": 2}])
+    {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "means", "n_models": 2},
+    {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all", "stats_sd": True,
+     "a_holdout": "block"}])
 def test_mu_variants_fit_and_predict(variant):
     genes, runs, train = synthetic(seed=2)
     c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,
@@ -508,10 +510,10 @@ def stat_rows(n_gene=8, n_run=6, k=3, seed=0):
     return t, (n_gene, n_run, 2 * n_gene, 2 * n_gene, k)
 
 
-def stat_model(t, sizes, vis=None, neighbours=True):
+def stat_model(t, sizes, vis=None, neighbours=True, sd=False):
     n_gene, n_run, n_gp, n_gc, k = sizes
     st = T._CountStats(dict(t), n_gene, n_run, n_gp, n_gc, k, neighbours,
-                       "cpu")
+                       "cpu", sd=sd)
     st.build(torch.ones(len(t["y"]), dtype=torch.bool) if vis is None
              else torch.as_tensor(vis))
     return st
@@ -543,10 +545,14 @@ def naive_stats(t, i, vis, leave_fold=True):
     out["prj_rows"] = np.log1p(pp.sum())
     if pp.any():
         out["prj_mean"] = c[pp].mean()
+    if pp.sum() > 1:
+        out["prj_sd"] = c[pp].std()
     cc = use & (a["gc"] == a["gc"][i]) & (a["gc"][i] >= 0)
     out["cond_rows"] = np.log1p(cc.sum())
     if cc.any():
         out["cond_mean"] = c[cc].mean()
+    if cc.sum() > 1:
+        out["cond_sd"] = c[cc].std()
     for side in ("up", "down"):
         j = a[f"nb_{side}"][i]
         if j >= 0 and vis[j] and a["fold"][j] != k and rr.any():
@@ -556,16 +562,19 @@ def naive_stats(t, i, vis, leave_fold=True):
     return out
 
 
-def test_count_stats_match_their_definitions():
+@pytest.mark.parametrize("sd", [False, True])
+def test_count_stats_match_their_definitions(sd):
     t, sizes = stat_rows()
     vis = np.ones(len(t["y"]), bool)
     vis[::7] = False                 # holdout rows: they read every fold
-    st = stat_model(t, sizes, vis)
+    st = stat_model(t, sizes, vis, sd=sd)
     i = torch.arange(len(t["y"]))
     v, kn = st.rows(i, all_on(len(i)), raw=True)
+    names = T._stat_names("all", sd)
+    assert v.shape[1] == len(names) == st.n_stats
     for row in range(len(t["y"])):
         want = naive_stats(t, row, vis)
-        for col, name in enumerate(T.STAT_NAMES):
+        for col, name in enumerate(names):
             assert bool(kn[row, col]) == (name in want), (row, name)
             if name in want:
                 assert float(v[row, col]) == pytest.approx(
@@ -575,11 +584,12 @@ def test_count_stats_match_their_definitions():
 def test_count_stats_never_read_the_row_itself():
     t, sizes = stat_rows(seed=3)
     i = torch.arange(len(t["y"]))
-    before, _ = stat_model(t, sizes).rows(i, all_on(len(i)), raw=True)
+    before, _ = stat_model(t, sizes, sd=True).rows(i, all_on(len(i)),
+                                                    raw=True)
     for row in (0, 13, 29, 47):
         y = t["y"].clone()
         y[row] = 50_000.0
-        after, _ = stat_model({**t, "y": y}, sizes).rows(
+        after, _ = stat_model({**t, "y": y}, sizes, sd=True).rows(
             i, all_on(len(i)), raw=True)
         # the row's own statistics do not move at all
         torch.testing.assert_close(after[row], before[row], atol=1e-5, rtol=0)
@@ -695,3 +705,44 @@ def test_count_stats_add_one_token_each():
     with pytest.raises(ValueError):
         T._ExprTransformer(cfg(count_stats="maybe"), tiny_tables(),
                            tiny_bias())
+    # the two spreads add two tokens, and nothing without statistics
+    sd = T._ExprTransformer(cfg(count_stats="all", stats_sd=True),
+                            tiny_tables(), tiny_bias())
+    assert sd.n_tokens == net.n_tokens + 2
+    off = T._ExprTransformer(cfg(stats_sd=True), tiny_tables(), tiny_bias())
+    assert off.n_tokens == base.n_tokens
+
+
+def test_block_holdout_hides_whole_blocks_like_region_a():
+    genes, runs, train = synthetic(seed=5)
+    # an experiment is a group of replicates: one project, one condition,
+    # about three runs each (3 projects x 6 conditions on 60 runs)
+    runs["prj_accession"] = [f"P{i % 3}" for i in range(len(runs))]
+    runs["experiment_accession"] = (
+        runs["genome_id"] + runs["prj_accession"] + runs["medium_category"]
+        + runs["temperature_celsius"].astype(str))
+
+    def holdout(mode):
+        model = T.TransformerModel({"feature_annotations": genes},
+                                   replace(T.TConfig(), a_holdout=mode))
+        model.log = lambda message: None
+        gene, run, _, _ = model.prepare(train, runs)
+        fit_rows, groups = model._holdouts(gene, run)
+        return model.ix, gene, run, fit_rows, groups["A"]
+
+    def shared(gene, group, a, fit_rows):
+        """Rows of A whose (gene, group) pair still has a fit row."""
+        key = gene.astype(np.int64) * 10**6 + group
+        return np.isin(key[a], key[fit_rows])
+
+    ix, gene, run, fit_rows, a = holdout("block")
+    assert a.sum() > 50
+    # block: no (gene, project x condition block) of A keeps a fit row, so
+    # neither does any (gene, experiment), as in region A
+    assert not shared(gene, T._stat_blocks(ix)[run], a, fit_rows).any()
+    assert not shared(gene, ix.exp_of_run[run], a, fit_rows).any()
+    # pair (the old holdout): replicates of the same experiment stay visible
+    ix, gene, run, fit_rows, a = holdout("pair")
+    assert shared(gene, ix.exp_of_run[run], a, fit_rows).any()
+    with pytest.raises(ValueError):
+        holdout("maybe")

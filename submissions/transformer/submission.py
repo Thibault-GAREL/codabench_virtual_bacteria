@@ -28,7 +28,10 @@
   many steps to learn a gene's level, these means are exact from the start.
   None of them ever reads the row's own count: each training row only sees
   the folds its block (gene x project and condition) is not in, the way the
-  region A hides its rows.
+  region A hides its rows. ``stats_sd`` adds the spread of the gene in its
+  project and condition, ``a_holdout=block`` builds the internal holdout of
+  region A from the same blocks, so that sigma is calibrated on a case as
+  hard as region A.
 - Every component of the 2017 Transformer that Modern_LLM replaces is a flag
   of ``TConfig``, off by default, so each one can be measured alone
   (``tools/ablate.py``): pre-norm, RMSNorm, DyT, SwiGLU, GeGLU, GQA, MQA,
@@ -113,6 +116,16 @@ STAT_NAMES = ["run_mean", "gene_mean", "gene_sd", "gene_rows", "prj_mean",
               "prj_rows", "cond_mean", "cond_rows", "up_level", "up_dev",
               "down_level", "down_dev"]
 N_MEAN_STATS = 8
+# with stats_sd, after the others: the spread of the gene's c in the project
+# and in the condition, so sigma knows where the gene is unstable
+SD_STAT_NAMES = ["prj_sd", "cond_sd"]
+
+
+def _stat_names(count_stats, stats_sd):
+    """Names of the count statistics of a configuration, in token order."""
+    names = {"off": [], "means": STAT_NAMES[:N_MEAN_STATS],
+             "all": STAT_NAMES}[count_stats]
+    return names + (SD_STAT_NAMES if names and stats_sd else [])
 
 
 @dataclass
@@ -175,6 +188,11 @@ class TConfig:
     # statistics of the training counts as inputs (2026-11-07)
     count_stats: str = "off"       # off | means | all (means + neighbours)
     stats_folds: int = 4           # folds of blocks, 1 hidden from each row
+    stats_sd: bool = False         # + spread of the gene in project, condition
+    # internal holdout of region A: pair (until 2026-11-07, condition blocks
+    # and random (gene, run) pairs whose replicates stay visible) | block
+    # (whole gene x project and condition blocks, as region A hides them)
+    a_holdout: str = "pair"
 
 
 # The configurations this file can submit, on top of the 2017 defaults, each
@@ -203,6 +221,11 @@ PRESETS = {
     # inputs (count_stats). Not measured yet, the stats suite of ablate.py.
     "mlp_stats_3seeds": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                          "epochs": 8.0, "n_models": 3, "count_stats": "all"},
+    # + the spreads of the gene in its project and condition, and the
+    # internal holdout of region A built like region A. The stats2 suite.
+    "mlp_stats2_3seeds": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
+                          "epochs": 8.0, "n_models": 3, "count_stats": "all",
+                          "stats_sd": True, "a_holdout": "block"},
 }
 SUBMITTED = "mlp_3seeds"
 PRESET = PRESETS[SUBMITTED]
@@ -579,7 +602,9 @@ class _CountStats:
     - ``up_level``, ``down_level``: z of the two genome neighbours of the
       gene in the same run, minus the run mean;
     - ``up_dev``, ``down_dev``: the same z minus the neighbour's own mean z,
-      how much more its operon is on in this run than usual.
+      how much more its operon is on in this run than usual;
+    - with ``sd``: ``prj_sd``, ``cond_sd``, the spread of c of the gene in
+      the project and in the condition.
 
     No leakage: every training row is in one of ``k`` folds, drawn per
     (gene, block) as region A hides its rows (see _stat_blocks). A training
@@ -591,7 +616,7 @@ class _CountStats:
     """
 
     def __init__(self, rows, n_gene, n_run, n_gp, n_gc, k, neighbours,
-                 device):
+                 device, sd=False):
         # device tensors over the training rows: gene, run, y, off, gp, gc,
         # fold, nb_up, nb_down
         self.r = rows
@@ -599,7 +624,8 @@ class _CountStats:
         self.size = {"run": n_run, "gene": n_gene, "gp": max(n_gp, 1),
                      "gc": max(n_gc, 1)}
         self.neighbours = neighbours
-        self.n_stats = len(STAT_NAMES) if neighbours else N_MEAN_STATS
+        self.sd = sd
+        self.n_stats = len(_stat_names("all" if neighbours else "means", sd))
         self.device = device
         self.center = torch.zeros(self.n_stats, device=device)
         self.scale = torch.ones(self.n_stats, device=device)
@@ -629,8 +655,9 @@ class _CountStats:
             run[1].index_add_(0, flat, torch.ones(len(i), device=dev))
         self.run = [v.view(-1, K) for v in run]
         run_mean = self.run[0].sum(1) / self.run[1].sum(1).clamp(min=1)
-        # gene: sum c, sum c^2, rows, sum z (the neighbours' own mean)
-        gene, gp, gc = table("gene", 4), table("gp", 2), table("gc", 2)
+        # gene: sum c, sum c^2, rows, sum z (the neighbours' own mean). The
+        # pairs: sum c, rows, sum c^2
+        gene, gp, gc = table("gene", 4), table("gp", 3), table("gc", 3)
         for s in range(0, len(sel), GPU_CHUNK):
             i = sel[s:s + GPU_CHUNK]
             f = r["fold"][i].long()
@@ -645,6 +672,7 @@ class _CountStats:
                 flat = idx[ok] * K + f[ok]
                 pairs[0].index_add_(0, flat, c[ok])
                 pairs[1].index_add_(0, flat, one[ok])
+                pairs[2].index_add_(0, flat, c[ok] * c[ok])
         self.gene, self.gp, self.gc = ([v.view(-1, K) for v in t]
                                        for t in (gene, gp, gc))
         self.gene_z = self.gene[3].sum(1) / self.gene[2].sum(1).clamp(min=1)
@@ -692,6 +720,12 @@ class _CountStats:
                 z = self._z(jj)
                 vals += [z - rm, z - self.gene_z[self.r["gene"][jj].long()]]
                 known += [ok, ok]
+        if self.sd:
+            for table, idx, n, m, on_ in ((self.gp, gp, n_p, m_p, prj),
+                                          (self.gc, gc, n_c, m_c, cond)):
+                sq = self._other_folds(table[2], idx, k) / n.clamp(min=1)
+                vals.append((sq - m ** 2).clamp(min=0).sqrt())
+                known.append((n > 1) & on_)
         v = torch.stack(vals, 1).float()
         kn = torch.stack(known, 1)
         if not raw:
@@ -1098,10 +1132,9 @@ class _ExprTransformer(nn.Module):
             self.n_tokens += 2
         # the statistics of the training counts, one token each, the
         # missing token when a statistic does not exist for the row
-        sizes = {"off": 0, "means": N_MEAN_STATS, "all": len(STAT_NAMES)}
-        if cfg.count_stats not in sizes:
+        if cfg.count_stats not in ("off", "means", "all"):
             raise ValueError(f"unknown count_stats {cfg.count_stats}")
-        self.n_stats = sizes[cfg.count_stats]
+        self.n_stats = len(_stat_names(cfg.count_stats, cfg.stats_sd))
         if self.n_stats:
             self.stat_tokens = _Numbers(self.n_stats, d)
             self.n_tokens += self.n_stats
@@ -1495,7 +1528,8 @@ class TransformerModel:
                 "nb_up": torch.as_tensor(up).to(dev),
                 "nb_down": torch.as_tensor(down).to(dev)}
         stats = _CountStats(rows, ix.n_gene, ix.n_run, self.gp.n, self.gc.n,
-                            cfg.stats_folds, cfg.count_stats == "all", dev)
+                            cfg.stats_folds, cfg.count_stats == "all", dev,
+                            sd=cfg.stats_sd)
         stats.build(torch.as_tensor(fit_rows).to(dev))
         some = np.flatnonzero(fit_rows)
         some = some[::max(1, len(some) // 200_000)]
@@ -1761,17 +1795,15 @@ class TransformerModel:
 
     # --- fit / predict ------------------------------------------------
 
-    def fit(self, train_df, samples_df, genomes_dir):
-        t0 = time.time()
-        cfg, dev = self.cfg, self.device
-        budget = cfg.max_minutes * 60
-        torch.manual_seed(cfg.seed)
-        gene, run, y, off = self.prepare(train_df, samples_df)
-        ix = self.ix
+    def _holdouts(self, gene, run):
+        """Fit rows and the internal holdout of each region (numpy masks).
 
-        # 1. Internal holdouts built like the regions C, B and A. B also
-        #    holds whole projects out: 60 % of the region B rows have a new
-        #    project and a new condition, the case the GLM calibrated worst.
+        C: 1 gene family in 20. B: runs with a sheet whose condition (1 in
+        25), experiment (1 in 50) or project (1 in 40) is held out, 60 % of
+        the region B rows having a new project and a new condition. A: see
+        ``a_holdout``.
+        """
+        cfg, ix = self.cfg, self.ix
         hold_gene = _hit(self.family, 20, seed=0)[gene]
         cond = ix.cond_of_run
         run_out = ix.has_sheet & (_hit(np.maximum(cond, 0), 25, seed=1)
@@ -1779,17 +1811,35 @@ class TransformerModel:
                                   | _hit(ix.prj_of_run, 40, seed=3))
         hold_run = run_out[run]
         free = ~hold_gene & ~hold_run
-        block_of_run = np.where(cond >= 0, cond,
-                                ix.n_cond + ix.prj_of_run).astype(np.int32)
-        hold_block = _hash_hit(gene, block_of_run[run], 50) & free
-        hold_pair = _hash_hit(gene, run, 50) & free & ~hold_block
+        if cfg.a_holdout == "block":
+            # region A hides a gene in a whole project x condition block: no
+            # replicate of a holdout row stays visible (2026-11-07)
+            hold_block = _hash_hit(gene, _stat_blocks(ix)[run], 25) & free
+            hold_pair = np.zeros_like(free)
+        elif cfg.a_holdout == "pair":
+            block_of_run = np.where(cond >= 0, cond, ix.n_cond
+                                    + ix.prj_of_run).astype(np.int32)
+            hold_block = _hash_hit(gene, block_of_run[run], 50) & free
+            hold_pair = _hash_hit(gene, run, 50) & free & ~hold_block
+        else:
+            raise ValueError(f"unknown a_holdout {cfg.a_holdout}")
         fit_rows = ~(hold_gene | hold_run | hold_block | hold_pair)
         groups = {"A": hold_block | hold_pair, "B": hold_run & ~hold_gene,
                   "C": hold_gene & ~hold_run, "D": hold_gene & hold_run}
+        return fit_rows, groups
+
+    def fit(self, train_df, samples_df, genomes_dir):
+        t0 = time.time()
+        cfg, dev = self.cfg, self.device
+        budget = cfg.max_minutes * 60
+        torch.manual_seed(cfg.seed)
+        gene, run, y, off = self.prepare(train_df, samples_df)
+
+        # 1. Internal holdouts built like the regions C, B and A
+        fit_rows, groups = self._holdouts(gene, run)
         self.log("holdout rows: " + ", ".join(
             f"{k} {int(v.sum()):,}" for k, v in groups.items())
             + f", fit {int(fit_rows.sum()):,}, {_ram()}")
-        hold_gene = hold_run = hold_block = hold_pair = free = None
 
         # 2. Device tables and the network
         self.t = {"gene": torch.as_tensor(gene).to(dev),

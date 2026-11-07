@@ -25,6 +25,8 @@ Suites:
               activation, dropout, out_scale, token size, PLR, three seeds
     stats     the statistics of the training counts as inputs of the best
               mlp: the means alone, with the neighbours, three seeds
+    stats2    on top of them, internal A holdouts built like region A and
+              the spreads of the gene in its project and condition
 """
 
 import argparse
@@ -152,6 +154,19 @@ SUITES = {
         "all": {"count_stats": "all"},
         "all_folds3": {"count_stats": "all", "stats_folds": 3},
         "all_seeds3": {"count_stats": "all", "n_models": 3},
+    }),
+    # 2026-11-07 b: region A did not move with count_stats (R2 0.50 to 0.74,
+    # NB-NLL flat): sigma is calibrated on internal A holdouts much easier
+    # than region A (random pairs whose replicates stay visible). block
+    # builds them like region A, sd adds the spread of the gene in its
+    # project and condition. Same budget as the stats suite.
+    "stats2": ({"_on_preset": True, "n_models": 1, "mixer": "mlp",
+                "dropout": 0.1, "count_stats": "all"}, {
+        "a_block": {"a_holdout": "block"},
+        "sd": {"stats_sd": True},
+        "a_block_sd": {"a_holdout": "block", "stats_sd": True},
+        "a_block_sd_seeds3": {"a_holdout": "block", "stats_sd": True,
+                              "n_models": 3},
     }),
 }
 # the speed suite only needs a short fit and no refit
