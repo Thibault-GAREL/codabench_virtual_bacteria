@@ -492,7 +492,10 @@ def _neighbours(genes):
     none = np.full(n, -1, dtype=np.int64)
     if not {"Chr", "Start", "Strand"} <= set(genes.columns):
         return none, none.copy(), np.zeros(n, bool), np.zeros(n, bool)
-    start = pd.to_numeric(genes["Start"], errors="coerce").to_numpy(float)
+    # a copy: pandas 3 hands out read-only arrays, and split genes are
+    # filled in below
+    start = pd.to_numeric(genes["Start"], errors="coerce").to_numpy(
+        dtype=float, copy=True)
     for i in np.flatnonzero(np.isnan(start)):
         parts = re.findall(r"\d+", str(genes["Start"].iat[i]))
         start[i] = min(float(p) for p in parts) if parts else np.nan
