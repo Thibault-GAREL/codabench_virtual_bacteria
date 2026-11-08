@@ -459,7 +459,9 @@ def test_plr_gene_signals_widen_the_feature_input():
      "a_holdout": "block"},
     {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all",
      "a_holdout": "block", "project_share": 0.5},
-    {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all", "stats_knn": 5}])
+    {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all", "stats_knn": 5},
+    {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all", "stats_knn": 5,
+     "stats_gknn": 5, "stats_mf": 4}])
 def test_mu_variants_fit_and_predict(variant):
     genes, runs, train = synthetic(seed=2)
     c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,
@@ -522,13 +524,13 @@ def layout(genome_of_gene, genome_of_run):
 
 
 def stat_model(t, sizes, vis=None, neighbours=True, sd=False, knn=0,
-               geo=None):
+               geo=None, gknn=0, mf=0):
     n_gene, n_run, n_gp, n_gc, k = sizes
-    if knn and geo is None:
+    if (knn or gknn or mf) and geo is None:
         # stat_rows: a single genome
         geo = layout(np.zeros(n_gene, int), np.zeros(n_run, int))
     st = T._CountStats(dict(t), n_gene, n_run, n_gp, n_gc, k, neighbours,
-                       "cpu", sd=sd, knn=knn, geo=geo)
+                       "cpu", sd=sd, knn=knn, geo=geo, gknn=gknn, mf=mf)
     st.build(torch.ones(len(t["y"]), dtype=torch.bool) if vis is None
              else torch.as_tensor(vis))
     return st
@@ -612,6 +614,92 @@ def naive_knn(t, i, vis, K, leave_fold=True):
     return out
 
 
+def naive_gknn(t, i, vis, K, leave_fold=True):
+    """gknn_dev and gknn_cover of row i in plain numpy, a single genome."""
+    a = {k: v.numpy() for k, v in t.items()}
+    z = np.log(a["y"].astype(float) + 0.5) - a["off"]
+    k = a["fold"][i] if (leave_fold and vis[i]) else -1
+    n_gene, n_run = a["gene"].max() + 1, a["run"].max() + 1
+    Z = np.zeros((n_run, n_gene))
+    use = np.zeros((n_run, n_gene), bool)
+    sel = vis & (a["fold"] != k)
+    Z[a["run"][sel], a["gene"][sel]] = z[sel]
+    use[a["run"][sel], a["gene"][sel]] = True
+    gm = np.array([Z[use[:, g], g].mean() if use[:, g].any() else 0.0
+                   for g in range(n_gene)])
+    E = np.where(use, Z - gm, 0.0)
+    E = np.where(use, E - (E.sum(1) / np.maximum(use.sum(1), 1))[:, None],
+                 0.0)
+    U = E / (np.linalg.norm(E, axis=0, keepdims=True) + 1e-6)
+    S = U.T @ U
+    ri, gi = a["run"][i], a["gene"][i]
+    S[gi, gi] = -np.inf
+    nb = np.argsort(-S[gi], kind="stable")[:min(K, n_gene - 1)]
+    w = np.clip(S[gi, nb], 0, None) ** 2
+    wg = w * use[ri, nb]
+    out = {}
+    if w.sum() > 0:
+        out["gknn_cover"] = wg.sum() / w.sum()
+    if wg.sum() > 0:
+        out["gknn_dev"] = (wg * E[ri, nb]).sum() / wg.sum()
+    return out
+
+
+def test_coexpressed_genes_match_their_definition():
+    t, sizes = stat_rows(n_gene=10, n_run=9, seed=11)
+    n = len(t["y"])
+    vis = np.ones(n, bool)
+    vis[::5] = False                 # holdout rows: every visible cell
+    st = stat_model(t, sizes, vis, knn=3, gknn=3, mf=2)
+    names = T._stat_names("all", False, 3, 3, 2)
+    assert names[-5:] == (T.KNN_STAT_NAMES + T.GKNN_STAT_NAMES
+                          + T.MF_STAT_NAMES)
+    assert len(names) == st.n_stats
+    v, kn = st.rows(torch.arange(n), all_on(n), raw=True)
+    ext, ext_kn = st.external(
+        t["gene"].long(), t["run"].long(), t["gp"].long(), t["gc"].long(),
+        (t["nb_up"], t["nb_down"]), all_on(n),
+        knn=st.similar(t["gene"], t["run"]))
+    checks = ((naive_knn, T.KNN_STAT_NAMES), (naive_gknn, T.GKNN_STAT_NAMES))
+    for row in range(n):
+        for leave, (vals, known) in ((True, (v, kn)),
+                                     (False, (ext, ext_kn))):
+            for naive, group in checks:
+                want = naive(t, row, vis, 3, leave_fold=leave)
+                for name in group:
+                    col = names.index(name)
+                    assert bool(known[row, col]) == (name in want), (row, name)
+                    if name in want:
+                        assert float(vals[row, col]) == pytest.approx(
+                            want[name], abs=1e-4), (row, name, leave)
+    # the co-expressed genes and the low-rank fit exist for most rows
+    for name in ("gknn_dev", "mf_dev"):
+        assert float(kn[:, names.index(name)].mean()) > 0.8
+
+
+def test_low_rank_fills_a_low_rank_matrix():
+    t, sizes = stat_rows(n_gene=30, n_run=20, seed=12)
+    rng = np.random.default_rng(12)
+    gene, run = t["gene"].numpy(), t["run"].numpy()
+    u, w = rng.normal(0, 1, (20, 2)), rng.normal(0, 1, (30, 2))
+    inter = (u[run] * w[gene]).sum(1)
+    z = 3.0 + rng.normal(0, 1, 30)[gene] + rng.normal(0, 0.5, 20)[run] + inter
+    t = {**t, "y": torch.as_tensor(np.exp(z) - 0.5, dtype=torch.float32),
+         "off": torch.zeros(len(z))}
+    vis = rng.random(len(z)) > 0.1
+    st = stat_model(t, sizes, vis, mf=2)
+    hidden = torch.as_tensor(np.flatnonzero(~vis))
+    v, kn = st.rows(hidden, all_on(len(hidden)), raw=True)
+    assert bool(kn[:, -1].all())
+    # the hidden cells get their interaction back, centred like the matrix
+    M = inter.reshape(30, 20).T                    # runs x genes
+    M = M - M.mean(0) - M.mean(1, keepdims=True) + M.mean()
+    want = M[run[~vis], gene[~vis]]
+    got = v[:, -1].numpy()
+    assert np.corrcoef(got, want)[0, 1] > 0.95
+    assert np.abs(got - want).mean() < 0.25 * np.abs(want).mean() + 0.05
+
+
 def test_similar_runs_match_their_definition():
     t, sizes = stat_rows(n_gene=10, n_run=9, seed=7)
     n = len(t["y"])
@@ -648,13 +736,13 @@ def test_similar_runs_stay_in_their_genome():
     geo = layout(np.repeat([0, 1], 6), np.repeat([0, 1], 5))
     n = len(t["y"])
     first = t["gene"] < 6
-    before, kn = stat_model(t, sizes, knn=3, geo=geo).rows(
+    before, kn = stat_model(t, sizes, knn=3, geo=geo, gknn=2, mf=2).rows(
         torch.arange(n), all_on(n), raw=True)
     y = t["y"].clone()
     y[~first] = y[~first] * 7 + 100
-    after, _ = stat_model({**t, "y": y}, sizes, knn=3, geo=geo).rows(
-        torch.arange(n), all_on(n), raw=True)
-    cols = list(range(-2, 0))
+    after, _ = stat_model({**t, "y": y}, sizes, knn=3, geo=geo, gknn=2,
+                          mf=2).rows(torch.arange(n), all_on(n), raw=True)
+    cols = list(range(-5, 0))
     torch.testing.assert_close(after[first][:, cols], before[first][:, cols])
     assert float(kn[:, -2].mean()) > 0.5
 
@@ -681,13 +769,13 @@ def test_count_stats_match_their_definitions(sd):
 def test_count_stats_never_read_the_row_itself():
     t, sizes = stat_rows(seed=3)
     i = torch.arange(len(t["y"]))
-    before, _ = stat_model(t, sizes, sd=True, knn=3).rows(
+    before, _ = stat_model(t, sizes, sd=True, knn=3, gknn=3, mf=2).rows(
         i, all_on(len(i)), raw=True)
     for row in (0, 13, 29, 47):
         y = t["y"].clone()
         y[row] = 50_000.0
-        after, _ = stat_model({**t, "y": y}, sizes, sd=True, knn=3).rows(
-            i, all_on(len(i)), raw=True)
+        after, _ = stat_model({**t, "y": y}, sizes, sd=True, knn=3, gknn=3,
+                              mf=2).rows(i, all_on(len(i)), raw=True)
         # the row's own statistics do not move at all
         torch.testing.assert_close(after[row], before[row], atol=1e-5, rtol=0)
         # its count does reach other rows: the statistics are not blind
@@ -729,13 +817,14 @@ def test_count_stats_follow_the_hidden_levels():
     _, kr = st.rows(i, (on[0], off) + on[2:])
     assert kr[:, run_side].sum() == 0
     torch.testing.assert_close(kr[:, gene_side], kn[:, gene_side])
-    # the similar runs need both the gene and the run
-    sk = stat_model(t, sizes, knn=3)
+    # the similar runs, the co-expressed genes and the low-rank fit need
+    # both the gene and the run
+    sk = stat_model(t, sizes, knn=3, gknn=3, mf=2)
     _, kn = sk.rows(i, on)
-    assert kn[:, -2:].sum() > 0
+    assert (kn[:, -5:].sum(0) > 0).all()
     for hidden in ((off,) + on[1:], (on[0], off) + on[2:]):
         _, kh = sk.rows(i, hidden)
-        assert kh[:, -2:].sum() == 0
+        assert kh[:, -5:].sum() == 0
 
 
 def test_a_neighbour_of_the_same_fold_is_hidden():
@@ -821,6 +910,11 @@ def test_count_stats_add_one_token_each():
     assert knn.n_tokens == net.n_tokens + 2
     off = T._ExprTransformer(cfg(stats_knn=50), tiny_tables(), tiny_bias())
     assert off.n_tokens == base.n_tokens
+    # the co-expressed genes two more, the low-rank fit one
+    cf = T._ExprTransformer(cfg(count_stats="all", stats_knn=50,
+                                stats_gknn=10, stats_mf=8),
+                            tiny_tables(), tiny_bias())
+    assert cf.n_tokens == knn.n_tokens + 3
 
 
 def test_block_holdout_hides_whole_blocks_like_region_a():

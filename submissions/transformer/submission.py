@@ -34,7 +34,11 @@
   hard as region A. ``stats_knn`` adds the level of the gene in the runs
   whose expression profile is closest to the row's run (collaborative
   filtering within the genome), what region A asks for: the run and the
-  gene are both known, only the pair is missing.
+  gene are both known, only the pair is missing. ``stats_gknn`` adds the
+  residual of the gene's most co-expressed genes in the same run, and
+  ``stats_mf`` its residual from a low-rank fit of the genome's runs x genes
+  residuals (soft impute), the same question seen from the genes and from
+  the whole matrix.
 - Every component of the 2017 Transformer that Modern_LLM replaces is a flag
   of ``TConfig``, off by default, so each one can be measured alone
   (``tools/ablate.py``): pre-norm, RMSNorm, DyT, SwiGLU, GeGLU, GQA, MQA,
@@ -126,6 +130,13 @@ SD_STAT_NAMES = ["prj_sd", "cond_sd"]
 # mean c there minus its own mean, and the share of the neighbours' weight
 # that sees the gene
 KNN_STAT_NAMES = ["knn_dev", "knn_cover"]
+# with stats_gknn, after them: the residual of the gene's most co-expressed
+# genes in the same run, and the share of their weight visible in the run
+GKNN_STAT_NAMES = ["gknn_dev", "gknn_cover"]
+# with stats_mf, last: the gene's residual in the run from a low-rank fit of
+# its genome's runs x genes residuals, filled in MF_ITERS rounds
+MF_STAT_NAMES = ["mf_dev"]
+MF_ITERS = 12
 # query rows per gather of the similar runs (rows x neighbours int64 indices)
 KNN_CHUNK = 262_144
 
@@ -141,14 +152,17 @@ def _parse_shifts(text):
     return out
 
 
-def _stat_names(count_stats, stats_sd, stats_knn=0):
+def _stat_names(count_stats, stats_sd, stats_knn=0, stats_gknn=0,
+                stats_mf=0):
     """Names of the count statistics of a configuration, in token order."""
     names = {"off": [], "means": STAT_NAMES[:N_MEAN_STATS],
              "all": STAT_NAMES}[count_stats]
     if not names:
         return []
     return (names + (SD_STAT_NAMES if stats_sd else [])
-            + (KNN_STAT_NAMES if stats_knn > 0 else []))
+            + (KNN_STAT_NAMES if stats_knn > 0 else [])
+            + (GKNN_STAT_NAMES if stats_gknn > 0 else [])
+            + (MF_STAT_NAMES if stats_mf > 0 else []))
 
 
 @dataclass
@@ -214,6 +228,10 @@ class TConfig:
     stats_sd: bool = False         # + spread of the gene in project, condition
     # + the gene in its stats_knn most similar runs (0 is off, 2026-11-08)
     stats_knn: int = 0
+    # + its stats_gknn most co-expressed genes in the run (0 is off)
+    stats_gknn: int = 0
+    # + its residual from a rank stats_mf fit of the genome (0 is off)
+    stats_mf: int = 0
     # internal holdout of region A: pair (until 2026-11-07, condition blocks
     # and random (gene, run) pairs whose replicates stay visible) | block
     # (whole gene x project and condition blocks, as region A hides them)
@@ -298,11 +316,25 @@ PRESETS = {
     # the local A: R2 of gene + run means 0.741, with the similar runs 0.812
     # (0.806 with 30, 0.810 with 50), 6 s per build on a GTX 1660 Ti for
     # the 69 M local rows. Same sigma shifts as calmix, untried locally.
+    # Platform 6.80 (A 6.57, B 6.67, C 7.16), 1st on 2026-11-08 ahead of
+    # ridhalezzar (6.80, A 6.45, B 6.70, C 7.26): A -0.06 as hoped.
     "mlp_stats_knn": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                       "epochs": 8.0, "count_stats": "all", "stats_knn": 100,
                       "sigma_extra": "A_full=-0.32,A_block=-0.18,"
                                      "B_condition=-0.78,B_project=-0.83,"
                                      "B_new=-0.50,C=-0.15"},
+    # + the residual of the gene's 30 most co-expressed genes in the run
+    # (stats_gknn) and of a rank 32 fit of the genome (stats_mf). On the
+    # local A: R2 0.812 to 0.833, linear NB-NLL correction of the mlp_stats
+    # mu -0.021 with the similar runs alone, -0.033 with all three. 17 s per
+    # build on a GTX 1660 Ti for the 69 M local rows, 4.4 GB of GPU at
+    # most. Same sigma shifts as calmix, untried locally.
+    "mlp_stats_cf": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
+                     "epochs": 8.0, "count_stats": "all", "stats_knn": 100,
+                     "stats_gknn": 30, "stats_mf": 32,
+                     "sigma_extra": "A_full=-0.32,A_block=-0.18,"
+                                    "B_condition=-0.78,B_project=-0.83,"
+                                    "B_new=-0.50,C=-0.15"},
     # + half of the genes hidden in their whole project in the folds and the
     # A holdout, as region A hides them. The stats3 suite.
     "mlp_stats3": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
@@ -320,7 +352,7 @@ PRESETS = {
                        "sigma_extra": "A_full=-0.24,B_condition=-0.34,"
                                       "B_project=-0.45,B_new=-0.22,C=-0.15"},
 }
-SUBMITTED = "mlp_stats_calmix"
+SUBMITTED = "mlp_stats_knn"
 PRESET = PRESETS[SUBMITTED]
 
 
@@ -753,21 +785,29 @@ class _CountStats:
       squared correlation and over those where the gene is visible, minus
       the gene's mean (``gene_mean``), and ``knn_cover``, the share of the
       K runs' weight where it is visible. The profile correlation is the
-      cosine of z centred by gene, then by run, over the visible cells.
+      cosine of z centred by gene, then by run, over the visible cells;
+    - with ``gknn`` (K): ``gknn_dev``, the mean residual (that centred z) of
+      the K genes of the genome whose profile across runs is closest to the
+      gene's, in the row's run, weighted as above and over those visible in
+      the run, and ``gknn_cover``, the share of their weight visible there;
+    - with ``mf`` (rank): ``mf_dev``, the residual of the cell in a low-rank
+      fit of the genome's residual matrix, its hidden cells filled by the
+      fit itself in MF_ITERS rounds (soft impute).
 
     No leakage: every training row is in one of ``k`` folds, drawn per
     (gene, block) as region A hides its rows (see _stat_blocks). A training
     row only sums the other folds, so its own count, and those of its whole
     block, never enter its statistics, and a neighbour of its own fold is
     hidden. The neighbour's own mean uses raw z, not c: c is centred by a
-    run mean that holds the row. The similar runs of a row of fold f are
-    ranked on the cells outside fold f, from z, so the row moves neither the
-    ranking nor the values. A row outside the visible ones (a holdout, a
-    test row) reads every visible row, as a test row will.
+    run mean that holds the row. The similar runs, the co-expressed genes
+    and the low-rank fit of a row of fold f are computed on the cells
+    outside fold f, from z, so the row moves neither the rankings nor the
+    values. A row outside the visible ones (a holdout, a test row) reads
+    every visible row, as a test row will.
     """
 
     def __init__(self, rows, n_gene, n_run, n_gp, n_gc, k, neighbours,
-                 device, sd=False, knn=0, geo=None):
+                 device, sd=False, knn=0, geo=None, gknn=0, mf=0):
         # device tensors over the training rows: gene, run, y, off, gp, gc,
         # fold, nb_up, nb_down
         self.r = rows
@@ -776,11 +816,13 @@ class _CountStats:
                      "gc": max(n_gc, 1)}
         self.neighbours = neighbours
         self.sd = sd
-        # knn: the genome layout of the runs and genes (_genome_layout)
-        self.knn, self.geo = knn, geo
-        self.knn_val = self.knn_cover = None
+        # knn, gknn, mf: the genome layout of the runs and genes
+        # (_genome_layout), and the values of _similar on the training rows
+        self.knn, self.gknn, self.mf, self.geo = knn, gknn, mf, geo
+        self.cf_on = bool(knn or gknn or mf)
+        self.cf = None
         self.n_stats = len(_stat_names("all" if neighbours else "means", sd,
-                                       knn))
+                                       knn, gknn, mf))
         self.device = device
         self.center = torch.zeros(self.n_stats, device=device)
         self.scale = torch.ones(self.n_stats, device=device)
@@ -832,24 +874,51 @@ class _CountStats:
                                        for t in (gene, gp, gc))
         self.gene_z = self.gene[3].sum(1) / self.gene[2].sum(1).clamp(min=1)
         self.run_mean = run_mean
-        if self.knn:
+        if self.cf_on:
             fold = torch.where(vis, r["fold"].to(torch.int8),
                                torch.full_like(r["fold"], -1,
                                                dtype=torch.int8))
-            self.knn_val, self.knn_cover = self._similar(r["gene"], r["run"],
-                                                         fold)
+            self.cf = self._similar(r["gene"], r["run"], fold)
+
+    @torch.no_grad()
+    def _low_rank(self, e, use, seed):
+        """Rank ``mf`` fit of the residuals ``e`` (runs x genes) seen on the
+        cells ``use``, the other cells filled by the fit itself, MF_ITERS
+        rounds of a warm started subspace iteration. Seeded per genome and
+        fold, so a fold gets the same values whatever the others hold. NaN
+        for a run or a gene without any cell."""
+        nr, ng = e.shape
+        q = min(self.mf, nr - 1, ng - 1)
+        if q < 1:
+            return torch.full_like(e, float("nan"))
+        gen = torch.Generator(device=e.device).manual_seed(seed)
+        basis = torch.randn(ng, q, generator=gen, device=e.device)
+        x = e
+        basis, _ = torch.linalg.qr(x @ basis)
+        for _ in range(MF_ITERS):
+            basis, _ = torch.linalg.qr(x @ (x.T @ basis))
+            low = basis @ (basis.T @ x)
+            x = torch.where(use, e, low)
+        known = use.any(1)[:, None] & use.any(0)[None, :]
+        return torch.where(known, low, torch.full_like(low, float("nan")))
 
     @torch.no_grad()
     def _similar(self, q_gene, q_run, q_fold):
-        """(mean c, cover) of each query row in its similar runs, NaN where
-        none of them sees the gene. ``q_fold``: the fold whose cells the row
-        must not read, -1 for none (a holdout or test row). Integer
-        tensors of any width: the copies stay small (int32 and int8)."""
+        """The collaborative statistics of each query row, in token order:
+        (mean c, cover) in its similar runs with ``knn``, (mean residual,
+        cover) of its co-expressed genes with ``gknn``, its low-rank
+        residual with ``mf``, NaN where they do not exist. ``q_fold``: the
+        fold whose cells the row must not read, -1 for none (a holdout or
+        test row). Integer tensors of any width: the copies stay small
+        (int32 and int8)."""
         geo, dev, r = self.geo, self.device, self.r
         nan = float("nan")
         n = len(q_gene)
         val = torch.full((n,), nan, device=dev)
         cover = torch.full((n,), nan, device=dev)
+        g_val = torch.full((n,), nan, device=dev)
+        g_cover = torch.full((n,), nan, device=dev)
+        low_val = torch.full((n,), nan, device=dev)
         # genome of each visible row and of each query row, -1 when the row
         # is out (not visible, an unknown level, a gene read in a run of
         # another genome, which never happens). Each genome then selects
@@ -896,30 +965,55 @@ class _CountStats:
                 per_run = use.sum(1).clamp(min=1)
                 e = torch.where(use, e - (e.sum(1) / per_run)[:, None],
                                 torch.zeros_like(e))
-                e = e / (e.norm(dim=1, keepdim=True) + 1e-6)
-                sim = e @ e.T
-                sim.fill_diagonal_(float("-inf"))
-                sims, top = sim.topk(min(self.knn, nr - 1), dim=1)
-                w_run = sims.clamp(min=0) ** 2
-                use = use.view(-1)
+                if self.knn:
+                    unit = e / (e.norm(dim=1, keepdim=True) + 1e-6)
+                    sim = unit @ unit.T
+                    sim.fill_diagonal_(float("-inf"))
+                    sims, top = sim.topk(min(self.knn, nr - 1), dim=1)
+                    w_run = sims.clamp(min=0) ** 2
+                    unit = sim = None
+                if self.gknn:
+                    unit = e / (e.norm(dim=0, keepdim=True) + 1e-6)
+                    sim = unit.T @ unit
+                    sim.fill_diagonal_(float("-inf"))
+                    sims, top_g = sim.topk(min(self.gknn, ng - 1), dim=1)
+                    w_gene = sims.clamp(min=0) ** 2
+                    unit = sim = None
+                low = (self._low_rank(e, use, gid * (self.k + 1) + f + 1)
+                       if self.mf else None)
+                use_flat, e_flat = use.view(-1), e.view(-1)
                 for s in range(0, len(q), KNN_CHUNK):
                     qq = q[s:s + KNN_CHUNK]
                     rl = geo["run_local"][q_run[qq].long()]
-                    flat = (top[rl] * ng
-                            + geo["gene_local"][q_gene[qq].long()][:, None])
-                    w = w_run[rl]
-                    wg = w * use[flat]
-                    sw, total = wg.sum(1), w.sum(1)
-                    val[qq] = torch.where(
-                        sw > 0, (wg * c[flat]).sum(1) / sw.clamp(min=1e-12),
-                        torch.full_like(sw, nan))
-                    cover[qq] = torch.where(
-                        total > 0, sw / total.clamp(min=1e-12),
-                        torch.full_like(sw, nan))
-        return val, cover
+                    gl = geo["gene_local"][q_gene[qq].long()]
+                    if self.knn:
+                        flat = top[rl] * ng + gl[:, None]
+                        val[qq], cover[qq] = self._weighted(
+                            w_run[rl], use_flat[flat], c[flat])
+                    if self.gknn:
+                        flat = rl[:, None] * ng + top_g[gl]
+                        g_val[qq], g_cover[qq] = self._weighted(
+                            w_gene[gl], use_flat[flat], e_flat[flat])
+                    if self.mf:
+                        low_val[qq] = low[rl, gl]
+        return (([val, cover] if self.knn else [])
+                + ([g_val, g_cover] if self.gknn else [])
+                + ([low_val] if self.mf else []))
+
+    @staticmethod
+    def _weighted(w, seen, x):
+        """Mean of ``x`` over the neighbours that see the cell, weighted by
+        ``w``, and the share of the weight they hold, NaN without any."""
+        wg = w * seen
+        sw, total = wg.sum(1), w.sum(1)
+        nan = torch.full_like(sw, float("nan"))
+        return (torch.where(sw > 0, (wg * x).sum(1) / sw.clamp(min=1e-12),
+                            nan),
+                torch.where(total > 0, sw / total.clamp(min=1e-12), nan))
 
     def similar(self, gene, run):
-        """(mean c, cover) of rows outside the training rows (test rows)."""
+        """The values of _similar for rows outside the training rows (the
+        test rows)."""
         return self._similar(gene, run,
                              torch.full_like(gene, -1, dtype=torch.int8))
 
@@ -940,7 +1034,8 @@ class _CountStats:
         the two neighbours (-1: none), ``on`` the visible id levels: a hidden
         gene loses its gene, project and condition means, a hidden run its
         run mean and its neighbours, as a new gene or a new run would. Both
-        lose the similar runs. ``knn``: the (mean c, cover) of _similar.
+        lose the similar runs, the co-expressed genes and the low-rank fit.
+        ``knn``: the values of _similar for these rows.
         """
         gene_on, run_on, prj_on, cond_on = on
         n_r = self._other_folds(self.run[1], r, k)
@@ -973,14 +1068,26 @@ class _CountStats:
                 sq = self._other_folds(table[2], idx, k) / n.clamp(min=1)
                 vals.append((sq - m ** 2).clamp(min=0).sqrt())
                 known.append((n > 1) & on_)
-        if self.knn:
+        if self.cf_on:
             if knn is None:
-                raise ValueError("stats_knn needs the similar runs")
-            mean_c, cov = knn
+                raise ValueError("stats_knn, stats_gknn and stats_mf need "
+                                 "the values of _similar")
+            parts = iter(knn)
             both = gene_on & run_on
-            vals += [mean_c - m_g, cov]
-            known += [torch.isfinite(mean_c) & both & (n_g > 0),
-                      torch.isfinite(cov) & both]
+            if self.knn:
+                mean_c, cov = next(parts), next(parts)
+                vals += [mean_c - m_g, cov]
+                known += [torch.isfinite(mean_c) & both & (n_g > 0),
+                          torch.isfinite(cov) & both]
+            if self.gknn:
+                mean_e, cov = next(parts), next(parts)
+                vals += [mean_e, cov]
+                known += [torch.isfinite(mean_e) & both,
+                          torch.isfinite(cov) & both]
+            if self.mf:
+                low = next(parts)
+                vals.append(low)
+                known.append(torch.isfinite(low) & both)
         v = torch.stack(vals, 1).float()
         kn = torch.stack(known, 1)
         if not raw:
@@ -993,7 +1100,7 @@ class _CountStats:
         r = self.r
         k = torch.where(self.vis[i], r["fold"][i].long(),
                         torch.full_like(i, -1))
-        knn = (self.knn_val[i], self.knn_cover[i]) if self.knn else None
+        knn = [v[i] for v in self.cf] if self.cf_on else None
         return self.features(r["gene"][i].long(), r["run"][i].long(),
                              r["gp"][i].long(), r["gc"][i].long(), k,
                              (r["nb_up"][i], r["nb_down"][i]), on, raw, knn)
@@ -1019,9 +1126,9 @@ class _CountStats:
         """Drops what only the training rows need, once the fit is done.
         The similar runs of the test rows still need the run of each row."""
         for name in ("gp", "gc", "nb_up", "nb_down") + (
-                () if self.knn else ("run",)):
+                () if self.cf_on else ("run",)):
             self.r.pop(name, None)
-        self.knn_val = self.knn_cover = None
+        self.cf = None
 
 
 # --- layers, each with its 2017 alternative --------------------------------
@@ -1396,7 +1503,8 @@ class _ExprTransformer(nn.Module):
         if cfg.count_stats not in ("off", "means", "all"):
             raise ValueError(f"unknown count_stats {cfg.count_stats}")
         self.n_stats = len(_stat_names(cfg.count_stats, cfg.stats_sd,
-                                       cfg.stats_knn))
+                                       cfg.stats_knn, cfg.stats_gknn,
+                                       cfg.stats_mf))
         if self.n_stats:
             self.stat_tokens = _Numbers(self.n_stats, d)
             self.n_tokens += self.n_stats
@@ -1791,10 +1899,12 @@ class TransformerModel:
                 "fold": torch.as_tensor(fold).to(dev),
                 "nb_up": torch.as_tensor(up).to(dev),
                 "nb_down": torch.as_tensor(down).to(dev)}
-        geo = (_genome_layout(ix, dev) if cfg.stats_knn > 0 else None)
+        collaborative = max(cfg.stats_knn, cfg.stats_gknn, cfg.stats_mf) > 0
+        geo = _genome_layout(ix, dev) if collaborative else None
         stats = _CountStats(rows, ix.n_gene, ix.n_run, self.gp.n, self.gc.n,
                             cfg.stats_folds, cfg.count_stats == "all", dev,
-                            sd=cfg.stats_sd, knn=cfg.stats_knn, geo=geo)
+                            sd=cfg.stats_sd, knn=cfg.stats_knn, geo=geo,
+                            gknn=cfg.stats_gknn, mf=cfg.stats_mf)
         fit_dev = torch.as_tensor(fit_rows).to(dev)
         stats.build(fit_dev)
         some = np.flatnonzero(fit_rows)
@@ -1802,10 +1912,22 @@ class TransformerModel:
         stats.fit_scale(torch.as_tensor(some).to(dev))
         found = float(np.mean((up >= 0) | (down >= 0)))
         knn = ""
+        parts = iter(stats.cf or [])
+
+        def share(v):
+            return float(torch.isfinite(v[fit_dev]).float().mean())
+
         if stats.knn:
-            seen = torch.isfinite(stats.knn_val[fit_dev]).float().mean()
-            knn = (f", the gene in {cfg.stats_knn} similar runs for "
-                   f"{float(seen):.0%} of the fit rows")
+            knn += (f", the gene in {cfg.stats_knn} similar runs for "
+                    f"{share(next(parts)):.0%} of the fit rows")
+            next(parts)
+        if stats.gknn:
+            knn += (f", {cfg.stats_gknn} co-expressed genes in the run for "
+                    f"{share(next(parts)):.0%}")
+            next(parts)
+        if stats.mf:
+            knn += (f", a rank {cfg.stats_mf} fit for "
+                    f"{share(next(parts)):.0%}")
         self.log(f"count stats: {stats.n_stats} inputs, {cfg.stats_folds} "
                  f"folds of gene x block, a neighbour row for {found:.0%} of "
                  f"the rows{knn} ({time.time() - t_start:.0f}s), "
@@ -2321,7 +2443,7 @@ class TransformerModel:
             # the gene in the runs most similar to the row's run
             knn = (stats.similar(torch.as_tensor(gene).to(dev),
                                  torch.as_tensor(run).to(dev))
-                   if stats.knn else None)
+                   if stats.cf_on else None)
             nb = [_find_rows(self.row_key, self.row_order, of, gene, run,
                              self.ix.n_run)
                   for of in (self.up_gene, self.down_gene)]
@@ -2341,7 +2463,7 @@ class TransformerModel:
                                  dev_slice(gc, s, e),
                                  [dev_slice(a, s, e) for a in nb], on,
                                  knn=(None if knn is None else
-                                      (knn[0][s:e], knn[1][s:e])))
+                                      [v[s:e] for v in knn]))
                   if stats is not None else None)
             outs = []
             for net in nets:

@@ -31,6 +31,8 @@ Suites:
               and the A holdout, as region A hides them
     knn       the gene in its K most similar runs (collaborative filtering
               within the genome), for region A
+    cf        on top of the similar runs, the co-expressed genes in the run
+              and a low-rank fit of the genome, for region A
 """
 
 import argparse
@@ -193,6 +195,20 @@ SUITES = {
         "knn30": {"stats_knn": 30},
         "knn100": {"stats_knn": 100},
         "knn200": {"stats_knn": 200},
+    }),
+    # 2026-11-08: stats_knn gave A -0.06 on the platform (6.57, 1st). The
+    # same question from the genes (their 30 most co-expressed genes in the
+    # run, stats_gknn) and from the whole matrix (rank 32 soft impute,
+    # stats_mf): on the local A, R2 0.812 with the similar runs, 0.833 with
+    # all three, and a linear NB-NLL correction of the mlp_stats mu gains
+    # -0.021 with the similar runs, -0.033 with all three.
+    "cf": ({"_on_preset": True, "n_models": 1, "mixer": "mlp",
+            "dropout": 0.1, "count_stats": "all", "stats_knn": 100}, {
+        "knn100": {},
+        "gknn30": {"stats_gknn": 30},
+        "mf32": {"stats_mf": 32},
+        "cf": {"stats_gknn": 30, "stats_mf": 32},
+        "cf_mf64": {"stats_gknn": 30, "stats_mf": 64},
     }),
 }
 # the speed suite only needs a short fit and no refit
