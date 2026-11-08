@@ -38,7 +38,9 @@
   residual of the gene's most co-expressed genes in the same run, and
   ``stats_mf`` its residual from a low-rank fit of the genome's runs x genes
   residuals (soft impute), the same question seen from the genes and from
-  the whole matrix.
+  the whole matrix. ``stats_ctx`` adds the level, in the row's run, of
+  the genes around it on the genome and of its operon partners, which a
+  new gene family (region C) still has.
 - Every component of the 2017 Transformer that Modern_LLM replaces is a flag
   of ``TConfig``, off by default, so each one can be measured alone
   (``tools/ablate.py``): pre-norm, RMSNorm, DyT, SwiGLU, GeGLU, GQA, MQA,
@@ -137,6 +139,12 @@ GKNN_STAT_NAMES = ["gknn_dev", "gknn_cover"]
 # its genome's runs x genes residuals, filled in MF_ITERS rounds
 MF_STAT_NAMES = ["mf_dev"]
 MF_ITERS = 12
+# with stats_ctx, last: the level (z minus the run mean) in the row's run of
+# the genes within CTX_WIDTH positions on the genome, and of the other genes
+# of its operon (same strand, less than OPERON_GAP bp apart), for region C
+CTX_STAT_NAMES = ["win_level", "operon_level"]
+CTX_WIDTH = 3
+OPERON_GAP = 100
 # query rows per gather of the similar runs (rows x neighbours int64 indices)
 KNN_CHUNK = 262_144
 
@@ -153,7 +161,7 @@ def _parse_shifts(text):
 
 
 def _stat_names(count_stats, stats_sd, stats_knn=0, stats_gknn=0,
-                stats_mf=0):
+                stats_mf=0, stats_ctx=False):
     """Names of the count statistics of a configuration, in token order."""
     names = {"off": [], "means": STAT_NAMES[:N_MEAN_STATS],
              "all": STAT_NAMES}[count_stats]
@@ -162,7 +170,8 @@ def _stat_names(count_stats, stats_sd, stats_knn=0, stats_gknn=0,
     return (names + (SD_STAT_NAMES if stats_sd else [])
             + (KNN_STAT_NAMES if stats_knn > 0 else [])
             + (GKNN_STAT_NAMES if stats_gknn > 0 else [])
-            + (MF_STAT_NAMES if stats_mf > 0 else []))
+            + (MF_STAT_NAMES if stats_mf > 0 else [])
+            + (CTX_STAT_NAMES if stats_ctx else []))
 
 
 @dataclass
@@ -232,6 +241,8 @@ class TConfig:
     stats_gknn: int = 0
     # + its residual from a rank stats_mf fit of the genome (0 is off)
     stats_mf: int = 0
+    # + the level of its genome window and of its operon in the run
+    stats_ctx: bool = False
     # internal holdout of region A: pair (until 2026-11-07, condition blocks
     # and random (gene, run) pairs whose replicates stay visible) | block
     # (whole gene x project and condition blocks, as region A hides them)
@@ -329,12 +340,28 @@ PRESETS = {
     # mu -0.021 with the similar runs alone, -0.033 with all three. 17 s per
     # build on a GTX 1660 Ti for the 69 M local rows, 4.4 GB of GPU at
     # most. Same sigma shifts as calmix, untried locally.
+    # Platform 6.78 (A 6.51, B 6.67, C 7.17), 1st on 2026-11-08: A -0.06
+    # again, five times the local floor gain over the similar runs alone.
     "mlp_stats_cf": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                      "epochs": 8.0, "count_stats": "all", "stats_knn": 100,
                      "stats_gknn": 30, "stats_mf": 32,
                      "sigma_extra": "A_full=-0.32,A_block=-0.18,"
                                     "B_condition=-0.78,B_project=-0.83,"
                                     "B_new=-0.50,C=-0.15"},
+    # + the level of the genes within 3 positions and of the operon
+    # partners in the run (stats_ctx), for region C, where the new stats
+    # above are hidden with the gene. On the local C, beyond the up and
+    # down neighbours the model already reads: linear NB-NLL correction of
+    # the mlp_stats mu -0.019 with the operon, -0.030 with the operon and
+    # the window (R2 0.595 to 0.629). The operons rebuilt from the
+    # annotations match those of the clean dataset exactly. 21 s per build
+    # with all the statistics on a GTX 1660 Ti for the 69 M local rows.
+    "mlp_stats_ctx": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
+                      "epochs": 8.0, "count_stats": "all", "stats_knn": 100,
+                      "stats_gknn": 30, "stats_mf": 32, "stats_ctx": True,
+                      "sigma_extra": "A_full=-0.32,A_block=-0.18,"
+                                     "B_condition=-0.78,B_project=-0.83,"
+                                     "B_new=-0.50,C=-0.15"},
     # + half of the genes hidden in their whole project in the folds and the
     # A holdout, as region A hides them. The stats3 suite.
     "mlp_stats3": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
@@ -352,7 +379,7 @@ PRESETS = {
                        "sigma_extra": "A_full=-0.24,B_condition=-0.34,"
                                       "B_project=-0.45,B_new=-0.22,C=-0.15"},
 }
-SUBMITTED = "mlp_stats_knn"
+SUBMITTED = "mlp_stats_cf"
 PRESET = PRESETS[SUBMITTED]
 
 
@@ -667,6 +694,54 @@ def _neighbours(genes):
     return up, down, same_strand(up), same_strand(down)
 
 
+def _coordinate(genes, column, pick):
+    """Numeric coordinate of each gene, ``pick`` (min or max) of the parts
+    of a split gene ("a;b"), NaN when missing."""
+    out = pd.to_numeric(genes[column], errors="coerce").to_numpy(
+        dtype=float, copy=True)
+    for i in np.flatnonzero(np.isnan(out)):
+        parts = re.findall(r"\d+", str(genes[column].iat[i]))
+        out[i] = pick(float(p) for p in parts) if parts else np.nan
+    return out
+
+
+def _operons(genes, gap=OPERON_GAP):
+    """Operon of each gene, -1 without coordinates: runs of consecutive
+    genes on the same replicon and strand less than ``gap`` bp apart, the
+    rule of the local clean dataset (tools/build_clean_dataset.py)."""
+    n = len(genes)
+    if not {"Chr", "Start", "End", "Strand"} <= set(genes.columns):
+        return np.full(n, -1, dtype=np.int64)
+    start = _coordinate(genes, "Start", min)
+    end = _coordinate(genes, "End", max)
+    chrom = (genes["genome_id"].astype(str) + "|"
+             + genes["Chr"].astype(str).str.split(";").str[0])
+    code = pd.factorize(chrom)[0]
+    strand = genes["Strand"].astype(str).str[:1].to_numpy()
+    ok = ~np.isnan(start) & ~np.isnan(end)
+    order = np.lexsort((np.where(ok, start, 0.0), code))
+    order = order[ok[order]]
+    link = np.zeros(len(order), dtype=bool)
+    link[1:] = ((code[order[1:]] == code[order[:-1]])
+                & (strand[order[1:]] == strand[order[:-1]])
+                & (start[order[1:]] - end[order[:-1]] - 1 < gap))
+    out = np.full(n, -1, dtype=np.int64)
+    out[order] = np.cumsum(~link) - 1
+    return out
+
+
+def _window(up, down, width):
+    """The genes up to ``width`` positions upstream and downstream of each
+    gene (n_gene, 2 * width), -1 past the end of the replicon."""
+    cols = []
+    for chain in (up, down):
+        cur = np.arange(len(up))
+        for _ in range(width):
+            cur = np.where(cur >= 0, chain[np.maximum(cur, 0)], -1)
+            cols.append(cur)
+    return np.stack(cols, 1)
+
+
 def _stat_blocks(ix):
     """Block of each run for the folds: its project and condition, or its
     experiment when it has no sheet. Region A hides a gene in a whole block:
@@ -737,12 +812,15 @@ def _genome_layout(ix, device):
     """Where each run and gene sits in the runs x genes matrix of its genome,
     for the similar runs of _CountStats (device tensors)."""
     run_local, run_order, n_run = _local_index(ix.genome_of_run, ix.n_genome)
-    gene_local, _, n_gene = _local_index(ix.genome_of_gene, ix.n_genome)
+    gene_local, gene_order, n_gene = _local_index(ix.genome_of_gene,
+                                                  ix.n_genome)
     run_start = np.concatenate([[0], np.cumsum(n_run)[:-1]])
+    gene_start = np.concatenate([[0], np.cumsum(n_gene)[:-1]])
     out = {"genome_of_run": ix.genome_of_run, "genome_of_gene":
            ix.genome_of_gene, "run_local": run_local, "gene_local": gene_local,
            "run_order": run_order, "run_start": run_start, "n_run": n_run,
-           "n_gene": n_gene}
+           "n_gene": n_gene, "gene_order": gene_order,
+           "gene_start": gene_start}
     # int32: the query rows index them by the tens of millions
     return {k: torch.as_tensor(np.asarray(v, dtype=np.int32)).to(device)
             for k, v in out.items()}
@@ -792,7 +870,12 @@ class _CountStats:
       the run, and ``gknn_cover``, the share of their weight visible there;
     - with ``mf`` (rank): ``mf_dev``, the residual of the cell in a low-rank
       fit of the genome's residual matrix, its hidden cells filled by the
-      fit itself in MF_ITERS rounds (soft impute).
+      fit itself in MF_ITERS rounds (soft impute);
+    - with ``ctx`` (the window genes and the operon of each gene):
+      ``win_level``, the mean level (z minus the run's mean z) of the
+      visible genes within CTX_WIDTH positions in the row's run, and
+      ``operon_level``, that of the other genes of its operon. They need
+      the run, not the gene: a new gene family (region C) still has them.
 
     No leakage: every training row is in one of ``k`` folds, drawn per
     (gene, block) as region A hides its rows (see _stat_blocks). A training
@@ -807,7 +890,7 @@ class _CountStats:
     """
 
     def __init__(self, rows, n_gene, n_run, n_gp, n_gc, k, neighbours,
-                 device, sd=False, knn=0, geo=None, gknn=0, mf=0):
+                 device, sd=False, knn=0, geo=None, gknn=0, mf=0, ctx=None):
         # device tensors over the training rows: gene, run, y, off, gp, gc,
         # fold, nb_up, nb_down
         self.r = rows
@@ -819,10 +902,12 @@ class _CountStats:
         # knn, gknn, mf: the genome layout of the runs and genes
         # (_genome_layout), and the values of _similar on the training rows
         self.knn, self.gknn, self.mf, self.geo = knn, gknn, mf, geo
-        self.cf_on = bool(knn or gknn or mf)
+        # ctx: (window genes (n_gene, 2 * CTX_WIDTH), operon of each gene)
+        self.ctx = ctx
+        self.cf_on = bool(knn or gknn or mf or ctx is not None)
         self.cf = None
         self.n_stats = len(_stat_names("all" if neighbours else "means", sd,
-                                       knn, gknn, mf))
+                                       knn, gknn, mf, ctx is not None))
         self.device = device
         self.center = torch.zeros(self.n_stats, device=device)
         self.scale = torch.ones(self.n_stats, device=device)
@@ -919,6 +1004,8 @@ class _CountStats:
         g_val = torch.full((n,), nan, device=dev)
         g_cover = torch.full((n,), nan, device=dev)
         low_val = torch.full((n,), nan, device=dev)
+        win_val = torch.full((n,), nan, device=dev)
+        op_val = torch.full((n,), nan, device=dev)
         # genome of each visible row and of each query row, -1 when the row
         # is out (not visible, an unknown level, a gene read in a run of
         # another genome, which never happens). Each genome then selects
@@ -933,8 +1020,9 @@ class _CountStats:
                             & (geo["genome_of_gene"][q_gene.clamp(min=0)]
                                == q_gen), q_gen, torch.full_like(q_gen, -1))
         sizes = list(zip(geo["n_run"].tolist(), geo["n_gene"].tolist(),
-                         geo["run_start"].tolist(), strict=True))
-        for gid, (nr, ng, s0) in enumerate(sizes):
+                         geo["run_start"].tolist(), geo["gene_start"].tolist(),
+                         strict=True))
+        for gid, (nr, ng, s0, g0) in enumerate(sizes):
             if nr < 2:
                 continue
             q_all = torch.nonzero(q_gen == gid).flatten()
@@ -953,6 +1041,12 @@ class _CountStats:
             runs = geo["run_order"][s0:s0 + nr]
             c = torch.where(seen, z - self.run_mean[runs][:, None],
                             torch.zeros_like(z)).view(-1)
+            if self.ctx is not None:
+                # the operons of the genome's genes, numbered 0 to n_op - 1
+                # (no operon gets a number too, never read)
+                here = geo["gene_order"][g0:g0 + ng].long()
+                op_codes, op_local = torch.unique(self.ctx[1][here],
+                                                  return_inverse=True)
             q_f = q_fold[q_all]
             for f in range(-1, self.k):
                 q = q_all[q_f == f]
@@ -981,6 +1075,16 @@ class _CountStats:
                     unit = sim = None
                 low = (self._low_rank(e, use, gid * (self.k + 1) + f + 1)
                        if self.mf else None)
+                if self.ctx is not None:
+                    # level: z minus the run's mean z, both outside fold f
+                    level = torch.where(use, z - ((z * use).sum(1)
+                                                  / per_run)[:, None],
+                                        torch.zeros_like(z))
+                    op_sum = torch.zeros(nr, len(op_codes), device=dev)
+                    op_sum.index_add_(1, op_local, level)
+                    op_cnt = torch.zeros(nr, len(op_codes), device=dev)
+                    op_cnt.index_add_(1, op_local, use.float())
+                    level_flat = level.view(-1)
                 use_flat, e_flat = use.view(-1), e.view(-1)
                 for s in range(0, len(q), KNN_CHUNK):
                     qq = q[s:s + KNN_CHUNK]
@@ -996,9 +1100,34 @@ class _CountStats:
                             w_gene[gl], use_flat[flat], e_flat[flat])
                     if self.mf:
                         low_val[qq] = low[rl, gl]
+                    if self.ctx is not None:
+                        win_val[qq], op_val[qq] = self._context(
+                            q_gene[qq].long(), rl, gl, gid, ng, use_flat,
+                            level_flat, op_local, op_sum, op_cnt)
         return (([val, cover] if self.knn else [])
                 + ([g_val, g_cover] if self.gknn else [])
-                + ([low_val] if self.mf else []))
+                + ([low_val] if self.mf else [])
+                + ([win_val, op_val] if self.ctx is not None else []))
+
+    def _context(self, q_gene, rl, gl, gid, ng, use_flat, level_flat,
+                 op_local, op_sum, op_cnt):
+        """Mean level of the visible window genes and of the other genes of
+        the operon, in the query rows' runs, NaN without any."""
+        win_genes, operon = self.ctx
+        geo, nan = self.geo, float("nan")
+        wg = win_genes[q_gene].long()
+        inside = (wg >= 0) & (geo["genome_of_gene"][wg.clamp(min=0)] == gid)
+        flat = rl[:, None] * ng + geo["gene_local"][wg.clamp(min=0)]
+        ok = inside & use_flat[flat]
+        n_win = ok.sum(1)
+        win = torch.where(
+            n_win > 0, (level_flat[flat] * ok).sum(1) / n_win.clamp(min=1),
+            torch.full_like(n_win, nan, dtype=torch.float32))
+        op = op_local[gl]
+        n_op = op_cnt[rl, op]
+        has = (operon[q_gene] >= 0) & (n_op > 0)
+        return win, torch.where(has, op_sum[rl, op] / n_op.clamp(min=1),
+                                torch.full_like(n_op, nan))
 
     @staticmethod
     def _weighted(w, seen, x):
@@ -1034,8 +1163,9 @@ class _CountStats:
         the two neighbours (-1: none), ``on`` the visible id levels: a hidden
         gene loses its gene, project and condition means, a hidden run its
         run mean and its neighbours, as a new gene or a new run would. Both
-        lose the similar runs, the co-expressed genes and the low-rank fit.
-        ``knn``: the values of _similar for these rows.
+        lose the similar runs, the co-expressed genes and the low-rank fit,
+        a hidden run its genome context. ``knn``: the values of _similar
+        for these rows.
         """
         gene_on, run_on, prj_on, cond_on = on
         n_r = self._other_folds(self.run[1], r, k)
@@ -1088,6 +1218,11 @@ class _CountStats:
                 low = next(parts)
                 vals.append(low)
                 known.append(torch.isfinite(low) & both)
+            if self.ctx is not None:
+                # the run alone: a new gene keeps its genome context
+                for ctx_level in (next(parts), next(parts)):
+                    vals.append(ctx_level)
+                    known.append(torch.isfinite(ctx_level) & run_on)
         v = torch.stack(vals, 1).float()
         kn = torch.stack(known, 1)
         if not raw:
@@ -1504,7 +1639,7 @@ class _ExprTransformer(nn.Module):
             raise ValueError(f"unknown count_stats {cfg.count_stats}")
         self.n_stats = len(_stat_names(cfg.count_stats, cfg.stats_sd,
                                        cfg.stats_knn, cfg.stats_gknn,
-                                       cfg.stats_mf))
+                                       cfg.stats_mf, cfg.stats_ctx))
         if self.n_stats:
             self.stat_tokens = _Numbers(self.n_stats, d)
             self.n_tokens += self.n_stats
@@ -1899,12 +2034,24 @@ class TransformerModel:
                 "fold": torch.as_tensor(fold).to(dev),
                 "nb_up": torch.as_tensor(up).to(dev),
                 "nb_down": torch.as_tensor(down).to(dev)}
-        collaborative = max(cfg.stats_knn, cfg.stats_gknn, cfg.stats_mf) > 0
+        collaborative = (max(cfg.stats_knn, cfg.stats_gknn, cfg.stats_mf) > 0
+                         or cfg.stats_ctx)
         geo = _genome_layout(ix, dev) if collaborative else None
+        ctx = None
+        if cfg.stats_ctx:
+            operon = _operons(self.genes)
+            ctx = (torch.as_tensor(_window(self.up_gene, self.down_gene,
+                                           CTX_WIDTH).astype(np.int32)).to(dev),
+                   torch.as_tensor(operon.astype(np.int32)).to(dev))
+            sizes = np.bincount(operon[operon >= 0])
+            self.log(f"genome context: {CTX_WIDTH} genes on each side, "
+                     f"{len(sizes):,} operons, "
+                     f"{float(np.mean(sizes[operon[operon >= 0]] > 1)):.0%} of "
+                     f"the genes with an operon partner")
         stats = _CountStats(rows, ix.n_gene, ix.n_run, self.gp.n, self.gc.n,
                             cfg.stats_folds, cfg.count_stats == "all", dev,
                             sd=cfg.stats_sd, knn=cfg.stats_knn, geo=geo,
-                            gknn=cfg.stats_gknn, mf=cfg.stats_mf)
+                            gknn=cfg.stats_gknn, mf=cfg.stats_mf, ctx=ctx)
         fit_dev = torch.as_tensor(fit_rows).to(dev)
         stats.build(fit_dev)
         some = np.flatnonzero(fit_rows)
@@ -1928,6 +2075,9 @@ class TransformerModel:
         if stats.mf:
             knn += (f", a rank {cfg.stats_mf} fit for "
                     f"{share(next(parts)):.0%}")
+        if stats.ctx is not None:
+            knn += (f", a window level for {share(next(parts)):.0%} and an "
+                    f"operon level for {share(next(parts)):.0%}")
         self.log(f"count stats: {stats.n_stats} inputs, {cfg.stats_folds} "
                  f"folds of gene x block, a neighbour row for {found:.0%} of "
                  f"the rows{knn} ({time.time() - t_start:.0f}s), "

@@ -209,6 +209,8 @@ SUITES = {
         "mf32": {"stats_mf": 32},
         "cf": {"stats_gknn": 30, "stats_mf": 32},
         "cf_mf64": {"stats_gknn": 30, "stats_mf": 64},
+        # the genome window and operon level in the run, for region C
+        "cf_ctx": {"stats_gknn": 30, "stats_mf": 32, "stats_ctx": True},
     }),
 }
 # the speed suite only needs a short fit and no refit

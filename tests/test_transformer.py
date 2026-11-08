@@ -281,6 +281,7 @@ def synthetic(n_genome=2, n_gene=150, n_run=60, seed=0):
         # one chromosome per genome, genes in order, for the neighbours
         "Chr": np.repeat([f"chr{i}" for i in range(n_genome)], n_gene),
         "Start": np.tile(np.arange(n_gene) * 1000 + 1, n_genome),
+        "End": np.tile(np.arange(n_gene) * 1000 + 951, n_genome),
         "Strand": rng.choice(["+", "-"], n_genome * n_gene)})
     media = rng.choice(["LB", "M9", "TSB"], n_genome * n_run)
     runs = pd.DataFrame({
@@ -461,7 +462,7 @@ def test_plr_gene_signals_widen_the_feature_input():
      "a_holdout": "block", "project_share": 0.5},
     {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all", "stats_knn": 5},
     {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all", "stats_knn": 5,
-     "stats_gknn": 5, "stats_mf": 4}])
+     "stats_gknn": 5, "stats_mf": 4, "stats_ctx": True}])
 def test_mu_variants_fit_and_predict(variant):
     genes, runs, train = synthetic(seed=2)
     c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,
@@ -523,14 +524,25 @@ def layout(genome_of_gene, genome_of_run):
     return T._genome_layout(ix, "cpu")
 
 
+def stat_context(n_gene):
+    """Genome context of stat_rows: genes in index order on one replicon,
+    operons of three genes."""
+    g = np.arange(n_gene)
+    up = np.where(g > 0, g - 1, -1)
+    down = np.where(g < n_gene - 1, g + 1, -1)
+    win = T._window(up, down, T.CTX_WIDTH)
+    return torch.as_tensor(win), torch.as_tensor(g // 3)
+
+
 def stat_model(t, sizes, vis=None, neighbours=True, sd=False, knn=0,
-               geo=None, gknn=0, mf=0):
+               geo=None, gknn=0, mf=0, ctx=False):
     n_gene, n_run, n_gp, n_gc, k = sizes
-    if (knn or gknn or mf) and geo is None:
+    if (knn or gknn or mf or ctx) and geo is None:
         # stat_rows: a single genome
         geo = layout(np.zeros(n_gene, int), np.zeros(n_run, int))
     st = T._CountStats(dict(t), n_gene, n_run, n_gp, n_gc, k, neighbours,
-                       "cpu", sd=sd, knn=knn, geo=geo, gknn=gknn, mf=mf)
+                       "cpu", sd=sd, knn=knn, geo=geo, gknn=gknn, mf=mf,
+                       ctx=stat_context(n_gene) if ctx else None)
     st.build(torch.ones(len(t["y"]), dtype=torch.bool) if vis is None
              else torch.as_tensor(vis))
     return st
@@ -677,6 +689,74 @@ def test_coexpressed_genes_match_their_definition():
         assert float(kn[:, names.index(name)].mean()) > 0.8
 
 
+def naive_ctx(t, i, vis, leave_fold=True):
+    """win_level and operon_level of row i in plain numpy (stat_context)."""
+    a = {k: v.numpy() for k, v in t.items()}
+    z = np.log(a["y"].astype(float) + 0.5) - a["off"]
+    k = a["fold"][i] if (leave_fold and vis[i]) else -1
+    n_gene = a["gene"].max() + 1
+    win, operon = (x.numpy() for x in stat_context(n_gene))
+    use = vis & (a["fold"] != k)
+    ri, gi = a["run"][i], a["gene"][i]
+    in_run = use & (a["run"] == ri)
+    out = {}
+    if not in_run.any():
+        return out
+    level = z - z[in_run].mean()
+    near = in_run & np.isin(a["gene"], win[gi][win[gi] >= 0])
+    if near.any():
+        out["win_level"] = level[near].mean()
+    same = in_run & (operon[a["gene"]] == operon[gi])
+    if same.any():
+        out["operon_level"] = level[same].mean()
+    return out
+
+
+def test_genome_context_matches_its_definition():
+    t, sizes = stat_rows(n_gene=12, n_run=5, seed=13)
+    n = len(t["y"])
+    vis = np.ones(n, bool)
+    vis[::4] = False                 # holdout rows: every visible cell
+    st = stat_model(t, sizes, vis, knn=2, ctx=True)
+    names = T._stat_names("all", False, 2, 0, 0, True)
+    assert names[-2:] == T.CTX_STAT_NAMES and len(names) == st.n_stats
+    v, kn = st.rows(torch.arange(n), all_on(n), raw=True)
+    ext, ext_kn = st.external(
+        t["gene"].long(), t["run"].long(), t["gp"].long(), t["gc"].long(),
+        (t["nb_up"], t["nb_down"]), all_on(n),
+        knn=st.similar(t["gene"], t["run"]))
+    for row in range(n):
+        for leave, (vals, known) in ((True, (v, kn)),
+                                     (False, (ext, ext_kn))):
+            want = naive_ctx(t, row, vis, leave_fold=leave)
+            for name in T.CTX_STAT_NAMES:
+                col = names.index(name)
+                assert bool(known[row, col]) == (name in want), (row, name)
+                if name in want:
+                    assert float(vals[row, col]) == pytest.approx(
+                        want[name], abs=1e-4), (row, name, leave)
+    assert float(kn[:, -1].mean()) > 0.8
+
+
+def test_operons_follow_strand_gap_and_replicon():
+    genes = pd.DataFrame({
+        "genome_id": ["G"] * 6 + ["H"],
+        "Chr": ["c1"] * 5 + ["c2", "c1"],
+        "Start": [100, 300, "500;520", 2000, 2100, 2200, 50],
+        "End": [250, 480, "560;600", 2050, 2190, 2300, 90],
+        "Strand": ["+", "+", "+", "+", "-", "-", "+"]})
+    op = T._operons(genes)
+    # 0, 1, 2 close on +, 3 far away, 4 on the other strand, 5 on another
+    # replicon, 6 in another genome
+    assert op[0] == op[1] == op[2]
+    assert len({op[2], op[3], op[4], op[5], op[6]}) == 5
+    assert (T._operons(genes.drop(columns="End")) == -1).all()
+    up = np.array([-1, 0, 1, 2])
+    down = np.array([1, 2, 3, -1])
+    assert T._window(up, down, 2).tolist() == [
+        [-1, -1, 1, 2], [0, -1, 2, 3], [1, 0, 3, -1], [2, 1, -1, -1]]
+
+
 def test_low_rank_fills_a_low_rank_matrix():
     t, sizes = stat_rows(n_gene=30, n_run=20, seed=12)
     rng = np.random.default_rng(12)
@@ -769,13 +849,14 @@ def test_count_stats_match_their_definitions(sd):
 def test_count_stats_never_read_the_row_itself():
     t, sizes = stat_rows(seed=3)
     i = torch.arange(len(t["y"]))
-    before, _ = stat_model(t, sizes, sd=True, knn=3, gknn=3, mf=2).rows(
-        i, all_on(len(i)), raw=True)
+    before, _ = stat_model(t, sizes, sd=True, knn=3, gknn=3, mf=2,
+                           ctx=True).rows(i, all_on(len(i)), raw=True)
     for row in (0, 13, 29, 47):
         y = t["y"].clone()
         y[row] = 50_000.0
         after, _ = stat_model({**t, "y": y}, sizes, sd=True, knn=3, gknn=3,
-                              mf=2).rows(i, all_on(len(i)), raw=True)
+                              mf=2, ctx=True).rows(i, all_on(len(i)),
+                                                   raw=True)
         # the row's own statistics do not move at all
         torch.testing.assert_close(after[row], before[row], atol=1e-5, rtol=0)
         # its count does reach other rows: the statistics are not blind
@@ -825,6 +906,14 @@ def test_count_stats_follow_the_hidden_levels():
     for hidden in ((off,) + on[1:], (on[0], off) + on[2:]):
         _, kh = sk.rows(i, hidden)
         assert kh[:, -5:].sum() == 0
+    # the genome context needs the run only, as a new gene still has it
+    sc = stat_model(t, sizes, ctx=True)
+    _, kn = sc.rows(i, on)
+    _, kg = sc.rows(i, (off,) + on[1:])
+    _, kr = sc.rows(i, (on[0], off) + on[2:])
+    assert (kn[:, -2:].sum(0) > 0).all()
+    torch.testing.assert_close(kg[:, -2:], kn[:, -2:])
+    assert kr[:, -2:].sum() == 0
 
 
 def test_a_neighbour_of_the_same_fold_is_hidden():
@@ -915,6 +1004,9 @@ def test_count_stats_add_one_token_each():
                                 stats_gknn=10, stats_mf=8),
                             tiny_tables(), tiny_bias())
     assert cf.n_tokens == knn.n_tokens + 3
+    ctx = T._ExprTransformer(cfg(count_stats="all", stats_ctx=True),
+                             tiny_tables(), tiny_bias())
+    assert ctx.n_tokens == net.n_tokens + 2
 
 
 def test_block_holdout_hides_whole_blocks_like_region_a():
