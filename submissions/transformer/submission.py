@@ -264,13 +264,21 @@ PRESETS = {
                                      "B_condition=-0.39,B_project=-0.41,"
                                      "B_new=-0.25,C=-0.15"},
     # the same at full strength: on the local halves 7.322 to 7.301 (A
-    # -0.018, B -0.038, C -0.006). The next candidate, since the half
-    # shifts transferred exactly.
+    # -0.018, B -0.038, C -0.006). Platform 6.83 (A 6.65, B 6.65, C 7.18) on
+    # 2026-11-08: B gained 0.06 as predicted, A and C lost 0.02 each, the
+    # full shifts are too wide on the platform's A and C.
     "mlp_stats_calfull": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                           "epochs": 8.0, "count_stats": "all",
                           "sigma_extra": "A_full=-0.63,A_block=-0.37,"
                                          "B_condition=-0.78,B_project=-0.83,"
                                          "B_new=-0.50,C=-0.29"},
+    # the best of both on the platform: full shifts on B, half on A and C.
+    # Expected about 6.81 (A 6.63, B 6.65, C 7.16).
+    "mlp_stats_calmix": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
+                         "epochs": 8.0, "count_stats": "all",
+                         "sigma_extra": "A_full=-0.32,A_block=-0.18,"
+                                        "B_condition=-0.78,B_project=-0.83,"
+                                        "B_new=-0.50,C=-0.15"},
     # + half of the genes hidden in their whole project in the folds and the
     # A holdout, as region A hides them. The stats3 suite.
     "mlp_stats3": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
