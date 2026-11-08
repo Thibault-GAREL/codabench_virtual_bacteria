@@ -237,7 +237,8 @@ PRESETS = {
     "mlp_3seeds_1024": {**_SOCLE, "mixer": "mlp", "mlp_hidden": 1024,
                         "epochs": 8.0, "n_models": 3},
     # 2026-11-07: mlp_3seeds with the statistics of the training counts as
-    # inputs (count_stats). Not measured yet, the stats suite of ablate.py.
+    # inputs (count_stats). Local 7.411, platform 6.92 (A 6.67, B 6.89,
+    # C 7.19).
     "mlp_stats_3seeds": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                          "epochs": 8.0, "n_models": 3, "count_stats": "all"},
     # + the spreads of the gene in its project and condition, and the
@@ -254,12 +255,22 @@ PRESETS = {
     # A_full -0.63, A_block -0.37, B_condition -0.78, B_project -0.83, B_new
     # -0.50, C -0.29). On held-out halves of the local rows: 7.394 to 7.322
     # at half strength, 7.301 at full strength. Half, as the platform
-    # regions look a little easier than the local ones.
+    # regions look a little easier than the local ones. Platform 6.83 (A
+    # 6.63, B 6.71, C 7.16), 2nd on 2026-11-08: B gained the 0.18 the local
+    # halves predicted, the shifts transfer as measured.
     "mlp_stats_cal": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                       "epochs": 8.0, "count_stats": "all",
                       "sigma_extra": "A_full=-0.32,A_block=-0.18,"
                                      "B_condition=-0.39,B_project=-0.41,"
                                      "B_new=-0.25,C=-0.15"},
+    # the same at full strength: on the local halves 7.322 to 7.301 (A
+    # -0.018, B -0.038, C -0.006). The next candidate, since the half
+    # shifts transferred exactly.
+    "mlp_stats_calfull": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
+                          "epochs": 8.0, "count_stats": "all",
+                          "sigma_extra": "A_full=-0.63,A_block=-0.37,"
+                                         "B_condition=-0.78,B_project=-0.83,"
+                                         "B_new=-0.50,C=-0.29"},
     # + half of the genes hidden in their whole project in the folds and the
     # A holdout, as region A hides them. The stats3 suite.
     "mlp_stats3": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
@@ -269,13 +280,15 @@ PRESETS = {
     # (diagnostic of 2026-11-07: A_full -0.48, A_block +0.02, B_condition
     # -0.68, B_project -0.91, B_new -0.44, C -0.30). The realistic A holdout
     # already calibrates A_block. On held-out halves: 7.364 to 7.305.
+    # Platform 6.87 (A 6.64, B 6.79, C 7.18): the local gain on A did not
+    # transfer, and keep_best stopped earlier (step 9,100 of 13,529).
     "mlp_stats3_cal": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                        "epochs": 8.0, "count_stats": "all",
                        "a_holdout": "block", "project_share": 0.5,
                        "sigma_extra": "A_full=-0.24,B_condition=-0.34,"
                                       "B_project=-0.45,B_new=-0.22,C=-0.15"},
 }
-SUBMITTED = "mlp_3seeds"
+SUBMITTED = "mlp_stats_cal"
 PRESET = PRESETS[SUBMITTED]
 
 
