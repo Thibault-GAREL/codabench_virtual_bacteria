@@ -29,6 +29,8 @@ Suites:
               the spreads of the gene in its project and condition
     stats3    half of the genes hidden in their whole project, in the folds
               and the A holdout, as region A hides them
+    knn       the gene in its K most similar runs (collaborative filtering
+              within the genome), for region A
 """
 
 import argparse
@@ -179,6 +181,18 @@ SUITES = {
         "share50": {"project_share": 0.5},
         "share50_sd": {"project_share": 0.5, "stats_sd": True},
         "share80": {"project_share": 0.8},
+    }),
+    # 2026-11-08: the whole gap to the leader is on region A (6.63 against
+    # 6.45). The gene in the K runs of its genome whose profile is closest
+    # to the row's run (stats_knn): on the local A, gene + run means explain
+    # R2 0.741, with the similar runs 0.810, and a linear correction of the
+    # mlp_stats mu by them already gives A -0.035 in NB-NLL.
+    "knn": ({"_on_preset": True, "n_models": 1, "mixer": "mlp",
+             "dropout": 0.1, "count_stats": "all"}, {
+        "all": {},
+        "knn30": {"stats_knn": 30},
+        "knn100": {"stats_knn": 100},
+        "knn200": {"stats_knn": 200},
     }),
 }
 # the speed suite only needs a short fit and no refit

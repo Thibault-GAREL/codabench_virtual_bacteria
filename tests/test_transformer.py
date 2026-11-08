@@ -14,6 +14,7 @@ import math
 import sys
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -457,7 +458,8 @@ def test_plr_gene_signals_widen_the_feature_input():
     {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all", "stats_sd": True,
      "a_holdout": "block"},
     {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all",
-     "a_holdout": "block", "project_share": 0.5}])
+     "a_holdout": "block", "project_share": 0.5},
+    {"mixer": "mlp", "mlp_hidden": 64, "count_stats": "all", "stats_knn": 5}])
 def test_mu_variants_fit_and_predict(variant):
     genes, runs, train = synthetic(seed=2)
     c = replace(T.TConfig(), d_model=16, n_heads=2, n_layers=1, batch=1024,
@@ -512,10 +514,21 @@ def stat_rows(n_gene=8, n_run=6, k=3, seed=0):
     return t, (n_gene, n_run, 2 * n_gene, 2 * n_gene, k)
 
 
-def stat_model(t, sizes, vis=None, neighbours=True, sd=False):
+def layout(genome_of_gene, genome_of_run):
+    ix = SimpleNamespace(genome_of_gene=np.asarray(genome_of_gene),
+                         genome_of_run=np.asarray(genome_of_run),
+                         n_genome=int(max(genome_of_run)) + 1)
+    return T._genome_layout(ix, "cpu")
+
+
+def stat_model(t, sizes, vis=None, neighbours=True, sd=False, knn=0,
+               geo=None):
     n_gene, n_run, n_gp, n_gc, k = sizes
+    if knn and geo is None:
+        # stat_rows: a single genome
+        geo = layout(np.zeros(n_gene, int), np.zeros(n_run, int))
     st = T._CountStats(dict(t), n_gene, n_run, n_gp, n_gc, k, neighbours,
-                       "cpu", sd=sd)
+                       "cpu", sd=sd, knn=knn, geo=geo)
     st.build(torch.ones(len(t["y"]), dtype=torch.bool) if vis is None
              else torch.as_tensor(vis))
     return st
@@ -564,6 +577,88 @@ def naive_stats(t, i, vis, leave_fold=True):
     return out
 
 
+def naive_knn(t, i, vis, K, leave_fold=True):
+    """knn_dev and knn_cover of row i in plain numpy, a single genome."""
+    a = {k: v.numpy() for k, v in t.items()}
+    z = np.log(a["y"].astype(float) + 0.5) - a["off"]
+    k = a["fold"][i] if (leave_fold and vis[i]) else -1
+    n_gene, n_run = a["gene"].max() + 1, a["run"].max() + 1
+    Z = np.zeros((n_run, n_gene))
+    use = np.zeros((n_run, n_gene), bool)
+    Z[a["run"][vis], a["gene"][vis]] = z[vis]
+    sel = vis & (a["fold"] != k)
+    use[a["run"][sel], a["gene"][sel]] = True
+    run_mean = np.array([z[vis & (a["run"] == r)].mean()
+                         for r in range(n_run)])
+    gm = np.array([Z[use[:, g], g].mean() if use[:, g].any() else 0.0
+                   for g in range(n_gene)])
+    E = np.where(use, Z - gm, 0.0)
+    E = np.where(use, E - (E.sum(1) / np.maximum(use.sum(1), 1))[:, None],
+                 0.0)
+    E /= np.linalg.norm(E, axis=1, keepdims=True) + 1e-6
+    S = E @ E.T
+    ri, gi = a["run"][i], a["gene"][i]
+    S[ri, ri] = -np.inf
+    nb = np.argsort(-S[ri], kind="stable")[:min(K, n_run - 1)]
+    w = np.clip(S[ri, nb], 0, None) ** 2
+    wg = w * use[nb, gi]
+    out = {}
+    if w.sum() > 0:
+        out["knn_cover"] = wg.sum() / w.sum()
+    gene_mean = naive_stats(t, i, vis, leave_fold).get("gene_mean")
+    if wg.sum() > 0 and gene_mean is not None:
+        c = Z[nb, gi] - run_mean[nb]
+        out["knn_dev"] = (wg * c).sum() / wg.sum() - gene_mean
+    return out
+
+
+def test_similar_runs_match_their_definition():
+    t, sizes = stat_rows(n_gene=10, n_run=9, seed=7)
+    n = len(t["y"])
+    vis = np.ones(n, bool)
+    vis[::6] = False                 # holdout rows: every visible cell
+    st = stat_model(t, sizes, vis, knn=3)
+    names = T._stat_names("all", False, 3)
+    assert names[-2:] == T.KNN_STAT_NAMES and len(names) == st.n_stats
+    cols = [names.index(x) for x in T.KNN_STAT_NAMES]
+    v, kn = st.rows(torch.arange(n), all_on(n), raw=True)
+    ext, ext_kn = st.external(
+        t["gene"].long(), t["run"].long(), t["gp"].long(), t["gc"].long(),
+        (t["nb_up"], t["nb_down"]), all_on(n),
+        knn=st.similar(t["gene"], t["run"]))
+    for row in range(n):
+        for leave, (vals, known) in ((True, (v, kn)),
+                                     (False, (ext, ext_kn))):
+            want = naive_knn(t, row, vis, 3, leave_fold=leave)
+            for col, name in zip(cols, T.KNN_STAT_NAMES, strict=True):
+                assert bool(known[row, col]) == (name in want), (row, name)
+                if name in want:
+                    assert float(vals[row, col]) == pytest.approx(
+                        want[name], abs=1e-4), (row, name, leave)
+    # the similar runs say something: they are known for most rows
+    assert float(kn[:, cols[0]].mean()) > 0.8
+
+
+def test_similar_runs_stay_in_their_genome():
+    # genes 0-5 and runs 0-4 in genome 0, genes 6-11 and runs 5-9 in genome 1
+    t, sizes = stat_rows(n_gene=12, n_run=10, seed=8)
+    keep = (t["gene"] < 6) == (t["run"] < 5)
+    t = {k: v[keep] for k, v in t.items()}
+    t["nb_up"] = t["nb_down"] = torch.full((int(keep.sum()),), -1)
+    geo = layout(np.repeat([0, 1], 6), np.repeat([0, 1], 5))
+    n = len(t["y"])
+    first = t["gene"] < 6
+    before, kn = stat_model(t, sizes, knn=3, geo=geo).rows(
+        torch.arange(n), all_on(n), raw=True)
+    y = t["y"].clone()
+    y[~first] = y[~first] * 7 + 100
+    after, _ = stat_model({**t, "y": y}, sizes, knn=3, geo=geo).rows(
+        torch.arange(n), all_on(n), raw=True)
+    cols = list(range(-2, 0))
+    torch.testing.assert_close(after[first][:, cols], before[first][:, cols])
+    assert float(kn[:, -2].mean()) > 0.5
+
+
 @pytest.mark.parametrize("sd", [False, True])
 def test_count_stats_match_their_definitions(sd):
     t, sizes = stat_rows()
@@ -586,12 +681,12 @@ def test_count_stats_match_their_definitions(sd):
 def test_count_stats_never_read_the_row_itself():
     t, sizes = stat_rows(seed=3)
     i = torch.arange(len(t["y"]))
-    before, _ = stat_model(t, sizes, sd=True).rows(i, all_on(len(i)),
-                                                    raw=True)
+    before, _ = stat_model(t, sizes, sd=True, knn=3).rows(
+        i, all_on(len(i)), raw=True)
     for row in (0, 13, 29, 47):
         y = t["y"].clone()
         y[row] = 50_000.0
-        after, _ = stat_model({**t, "y": y}, sizes, sd=True).rows(
+        after, _ = stat_model({**t, "y": y}, sizes, sd=True, knn=3).rows(
             i, all_on(len(i)), raw=True)
         # the row's own statistics do not move at all
         torch.testing.assert_close(after[row], before[row], atol=1e-5, rtol=0)
@@ -634,6 +729,13 @@ def test_count_stats_follow_the_hidden_levels():
     _, kr = st.rows(i, (on[0], off) + on[2:])
     assert kr[:, run_side].sum() == 0
     torch.testing.assert_close(kr[:, gene_side], kn[:, gene_side])
+    # the similar runs need both the gene and the run
+    sk = stat_model(t, sizes, knn=3)
+    _, kn = sk.rows(i, on)
+    assert kn[:, -2:].sum() > 0
+    for hidden in ((off,) + on[1:], (on[0], off) + on[2:]):
+        _, kh = sk.rows(i, hidden)
+        assert kh[:, -2:].sum() == 0
 
 
 def test_a_neighbour_of_the_same_fold_is_hidden():
@@ -712,6 +814,12 @@ def test_count_stats_add_one_token_each():
                             tiny_tables(), tiny_bias())
     assert sd.n_tokens == net.n_tokens + 2
     off = T._ExprTransformer(cfg(stats_sd=True), tiny_tables(), tiny_bias())
+    assert off.n_tokens == base.n_tokens
+    # the similar runs add two tokens, nothing without statistics either
+    knn = T._ExprTransformer(cfg(count_stats="all", stats_knn=50),
+                             tiny_tables(), tiny_bias())
+    assert knn.n_tokens == net.n_tokens + 2
+    off = T._ExprTransformer(cfg(stats_knn=50), tiny_tables(), tiny_bias())
     assert off.n_tokens == base.n_tokens
 
 

@@ -31,7 +31,10 @@
   region A hides its rows. ``stats_sd`` adds the spread of the gene in its
   project and condition, ``a_holdout=block`` builds the internal holdout of
   region A from the same blocks, so that sigma is calibrated on a case as
-  hard as region A.
+  hard as region A. ``stats_knn`` adds the level of the gene in the runs
+  whose expression profile is closest to the row's run (collaborative
+  filtering within the genome), what region A asks for: the run and the
+  gene are both known, only the pair is missing.
 - Every component of the 2017 Transformer that Modern_LLM replaces is a flag
   of ``TConfig``, off by default, so each one can be measured alone
   (``tools/ablate.py``): pre-norm, RMSNorm, DyT, SwiGLU, GeGLU, GQA, MQA,
@@ -119,6 +122,12 @@ N_MEAN_STATS = 8
 # with stats_sd, after the others: the spread of the gene's c in the project
 # and in the condition, so sigma knows where the gene is unstable
 SD_STAT_NAMES = ["prj_sd", "cond_sd"]
+# with stats_knn, last: the gene in the most similar runs of its genome, its
+# mean c there minus its own mean, and the share of the neighbours' weight
+# that sees the gene
+KNN_STAT_NAMES = ["knn_dev", "knn_cover"]
+# query rows per gather of the similar runs (rows x neighbours int64 indices)
+KNN_CHUNK = 262_144
 
 
 def _parse_shifts(text):
@@ -132,11 +141,14 @@ def _parse_shifts(text):
     return out
 
 
-def _stat_names(count_stats, stats_sd):
+def _stat_names(count_stats, stats_sd, stats_knn=0):
     """Names of the count statistics of a configuration, in token order."""
     names = {"off": [], "means": STAT_NAMES[:N_MEAN_STATS],
              "all": STAT_NAMES}[count_stats]
-    return names + (SD_STAT_NAMES if names and stats_sd else [])
+    if not names:
+        return []
+    return (names + (SD_STAT_NAMES if stats_sd else [])
+            + (KNN_STAT_NAMES if stats_knn > 0 else []))
 
 
 @dataclass
@@ -200,6 +212,8 @@ class TConfig:
     count_stats: str = "off"       # off | means | all (means + neighbours)
     stats_folds: int = 4           # folds of blocks, 1 hidden from each row
     stats_sd: bool = False         # + spread of the gene in project, condition
+    # + the gene in its stats_knn most similar runs (0 is off, 2026-11-08)
+    stats_knn: int = 0
     # internal holdout of region A: pair (until 2026-11-07, condition blocks
     # and random (gene, run) pairs whose replicates stay visible) | block
     # (whole gene x project and condition blocks, as region A hides them)
@@ -273,12 +287,22 @@ PRESETS = {
                                          "B_condition=-0.78,B_project=-0.83,"
                                          "B_new=-0.50,C=-0.29"},
     # the best of both on the platform: full shifts on B, half on A and C.
-    # Expected about 6.81 (A 6.63, B 6.65, C 7.16).
+    # Expected about 6.81 (A 6.63, B 6.65, C 7.16). Platform 6.82 (A 6.63,
+    # B 6.66, C 7.17), 2nd on 2026-11-08, the leader at 6.80 (A 6.45).
     "mlp_stats_calmix": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                          "epochs": 8.0, "count_stats": "all",
                          "sigma_extra": "A_full=-0.32,A_block=-0.18,"
                                         "B_condition=-0.78,B_project=-0.83,"
                                         "B_new=-0.50,C=-0.15"},
+    # + the gene in its 100 most similar runs (stats_knn), for region A. On
+    # the local A: R2 of gene + run means 0.741, with the similar runs 0.812
+    # (0.806 with 30, 0.810 with 50), 6 s per build on a GTX 1660 Ti for
+    # the 69 M local rows. Same sigma shifts as calmix, untried locally.
+    "mlp_stats_knn": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
+                      "epochs": 8.0, "count_stats": "all", "stats_knn": 100,
+                      "sigma_extra": "A_full=-0.32,A_block=-0.18,"
+                                     "B_condition=-0.78,B_project=-0.83,"
+                                     "B_new=-0.50,C=-0.15"},
     # + half of the genes hidden in their whole project in the folds and the
     # A holdout, as region A hides them. The stats3 suite.
     "mlp_stats3": {**_SOCLE, "mixer": "mlp", "dropout": 0.1, "epochs": 8.0,
@@ -296,7 +320,7 @@ PRESETS = {
                        "sigma_extra": "A_full=-0.24,B_condition=-0.34,"
                                       "B_project=-0.45,B_new=-0.22,C=-0.15"},
 }
-SUBMITTED = "mlp_stats_cal"
+SUBMITTED = "mlp_stats_calmix"
 PRESET = PRESETS[SUBMITTED]
 
 
@@ -661,6 +685,37 @@ def _row_lookup(gene, run, n_run):
     return key[order], order.astype(np.int32)
 
 
+def _local_index(group, n_group):
+    """Position of each item within its group, the items sorted by group
+    (that position order), and the size of each group. An item of group -1
+    gets position 0 and comes last in the order."""
+    ok = group >= 0
+    size = np.bincount(group[ok], minlength=n_group)
+    key = np.where(ok, group, n_group)
+    order = np.argsort(key, kind="stable")
+    start = np.concatenate([[0], np.cumsum(size)])
+    pos = np.zeros(len(group), dtype=np.int64)
+    inside = key[order] < n_group
+    pos[order[inside]] = (np.arange(int(inside.sum()))
+                          - start[key[order][inside]])
+    return pos, order, size
+
+
+def _genome_layout(ix, device):
+    """Where each run and gene sits in the runs x genes matrix of its genome,
+    for the similar runs of _CountStats (device tensors)."""
+    run_local, run_order, n_run = _local_index(ix.genome_of_run, ix.n_genome)
+    gene_local, _, n_gene = _local_index(ix.genome_of_gene, ix.n_genome)
+    run_start = np.concatenate([[0], np.cumsum(n_run)[:-1]])
+    out = {"genome_of_run": ix.genome_of_run, "genome_of_gene":
+           ix.genome_of_gene, "run_local": run_local, "gene_local": gene_local,
+           "run_order": run_order, "run_start": run_start, "n_run": n_run,
+           "n_gene": n_gene}
+    # int32: the query rows index them by the tens of millions
+    return {k: torch.as_tensor(np.asarray(v, dtype=np.int32)).to(device)
+            for k, v in out.items()}
+
+
 def _find_rows(sorted_key, order, of_gene, gene, run, n_run):
     """Training row of the pair (of_gene[gene], run), -1 when absent."""
     out = np.full(len(gene), -1, dtype=np.int32)
@@ -692,19 +747,27 @@ class _CountStats:
     - ``up_dev``, ``down_dev``: the same z minus the neighbour's own mean z,
       how much more its operon is on in this run than usual;
     - with ``sd``: ``prj_sd``, ``cond_sd``, the spread of c of the gene in
-      the project and in the condition.
+      the project and in the condition;
+    - with ``knn`` (K): ``knn_dev``, the mean c of the gene in the K runs of
+      its genome whose profile is closest to the row's run, weighted by the
+      squared correlation and over those where the gene is visible, minus
+      the gene's mean (``gene_mean``), and ``knn_cover``, the share of the
+      K runs' weight where it is visible. The profile correlation is the
+      cosine of z centred by gene, then by run, over the visible cells.
 
     No leakage: every training row is in one of ``k`` folds, drawn per
     (gene, block) as region A hides its rows (see _stat_blocks). A training
     row only sums the other folds, so its own count, and those of its whole
     block, never enter its statistics, and a neighbour of its own fold is
     hidden. The neighbour's own mean uses raw z, not c: c is centred by a
-    run mean that holds the row. A row outside the visible ones (a holdout,
-    a test row) reads every visible row, as a test row will.
+    run mean that holds the row. The similar runs of a row of fold f are
+    ranked on the cells outside fold f, from z, so the row moves neither the
+    ranking nor the values. A row outside the visible ones (a holdout, a
+    test row) reads every visible row, as a test row will.
     """
 
     def __init__(self, rows, n_gene, n_run, n_gp, n_gc, k, neighbours,
-                 device, sd=False):
+                 device, sd=False, knn=0, geo=None):
         # device tensors over the training rows: gene, run, y, off, gp, gc,
         # fold, nb_up, nb_down
         self.r = rows
@@ -713,7 +776,11 @@ class _CountStats:
                      "gc": max(n_gc, 1)}
         self.neighbours = neighbours
         self.sd = sd
-        self.n_stats = len(_stat_names("all" if neighbours else "means", sd))
+        # knn: the genome layout of the runs and genes (_genome_layout)
+        self.knn, self.geo = knn, geo
+        self.knn_val = self.knn_cover = None
+        self.n_stats = len(_stat_names("all" if neighbours else "means", sd,
+                                       knn))
         self.device = device
         self.center = torch.zeros(self.n_stats, device=device)
         self.scale = torch.ones(self.n_stats, device=device)
@@ -764,6 +831,97 @@ class _CountStats:
         self.gene, self.gp, self.gc = ([v.view(-1, K) for v in t]
                                        for t in (gene, gp, gc))
         self.gene_z = self.gene[3].sum(1) / self.gene[2].sum(1).clamp(min=1)
+        self.run_mean = run_mean
+        if self.knn:
+            fold = torch.where(vis, r["fold"].to(torch.int8),
+                               torch.full_like(r["fold"], -1,
+                                               dtype=torch.int8))
+            self.knn_val, self.knn_cover = self._similar(r["gene"], r["run"],
+                                                         fold)
+
+    @torch.no_grad()
+    def _similar(self, q_gene, q_run, q_fold):
+        """(mean c, cover) of each query row in its similar runs, NaN where
+        none of them sees the gene. ``q_fold``: the fold whose cells the row
+        must not read, -1 for none (a holdout or test row). Integer
+        tensors of any width: the copies stay small (int32 and int8)."""
+        geo, dev, r = self.geo, self.device, self.r
+        nan = float("nan")
+        n = len(q_gene)
+        val = torch.full((n,), nan, device=dev)
+        cover = torch.full((n,), nan, device=dev)
+        # genome of each visible row and of each query row, -1 when the row
+        # is out (not visible, an unknown level, a gene read in a run of
+        # another genome, which never happens). Each genome then selects
+        # its rows with a mask: no sort of the tens of millions of rows,
+        # whose buffers would cost more GPU memory than everything else.
+        v_gen = geo["genome_of_run"][r["run"]]
+        v_gen = torch.where(self.vis & (geo["genome_of_gene"][r["gene"]]
+                                        == v_gen),
+                            v_gen, torch.full_like(v_gen, -1))
+        q_gen = geo["genome_of_run"][q_run.clamp(min=0)]
+        q_gen = torch.where((q_gene >= 0) & (q_run >= 0)
+                            & (geo["genome_of_gene"][q_gene.clamp(min=0)]
+                               == q_gen), q_gen, torch.full_like(q_gen, -1))
+        sizes = list(zip(geo["n_run"].tolist(), geo["n_gene"].tolist(),
+                         geo["run_start"].tolist(), strict=True))
+        for gid, (nr, ng, s0) in enumerate(sizes):
+            if nr < 2:
+                continue
+            q_all = torch.nonzero(q_gen == gid).flatten()
+            rows = (torch.nonzero(v_gen == gid).flatten() if len(q_all)
+                    else q_all)
+            if not len(rows):
+                continue
+            cell = (geo["run_local"][r["run"][rows].long()] * ng
+                    + geo["gene_local"][r["gene"][rows].long()])
+            z = torch.zeros(nr * ng, device=dev)
+            z[cell] = self._z(rows)
+            fold = torch.full((nr * ng,), -1, dtype=torch.int8, device=dev)
+            fold[cell] = r["fold"][rows].to(torch.int8)
+            z, fold = z.view(nr, ng), fold.view(nr, ng)
+            seen = fold >= 0
+            runs = geo["run_order"][s0:s0 + nr]
+            c = torch.where(seen, z - self.run_mean[runs][:, None],
+                            torch.zeros_like(z)).view(-1)
+            q_f = q_fold[q_all]
+            for f in range(-1, self.k):
+                q = q_all[q_f == f]
+                if not len(q):
+                    continue
+                use = seen & (fold != f)
+                cnt = use.sum(0).clamp(min=1)
+                e = torch.where(use, z - (z * use).sum(0) / cnt,
+                                torch.zeros_like(z))
+                per_run = use.sum(1).clamp(min=1)
+                e = torch.where(use, e - (e.sum(1) / per_run)[:, None],
+                                torch.zeros_like(e))
+                e = e / (e.norm(dim=1, keepdim=True) + 1e-6)
+                sim = e @ e.T
+                sim.fill_diagonal_(float("-inf"))
+                sims, top = sim.topk(min(self.knn, nr - 1), dim=1)
+                w_run = sims.clamp(min=0) ** 2
+                use = use.view(-1)
+                for s in range(0, len(q), KNN_CHUNK):
+                    qq = q[s:s + KNN_CHUNK]
+                    rl = geo["run_local"][q_run[qq].long()]
+                    flat = (top[rl] * ng
+                            + geo["gene_local"][q_gene[qq].long()][:, None])
+                    w = w_run[rl]
+                    wg = w * use[flat]
+                    sw, total = wg.sum(1), w.sum(1)
+                    val[qq] = torch.where(
+                        sw > 0, (wg * c[flat]).sum(1) / sw.clamp(min=1e-12),
+                        torch.full_like(sw, nan))
+                    cover[qq] = torch.where(
+                        total > 0, sw / total.clamp(min=1e-12),
+                        torch.full_like(sw, nan))
+        return val, cover
+
+    def similar(self, gene, run):
+        """(mean c, cover) of rows outside the training rows (test rows)."""
+        return self._similar(gene, run,
+                             torch.full_like(gene, -1, dtype=torch.int8))
 
     def _other_folds(self, table, idx, k):
         """Sum of ``table`` at ``idx`` over the folds other than ``k`` (all of
@@ -775,13 +933,14 @@ class _CountStats:
         return torch.where(idx >= 0, total, torch.zeros_like(total))
 
     @torch.no_grad()
-    def features(self, g, r, gp, gc, k, nb, on, raw=False):
+    def features(self, g, r, gp, gc, k, nb, on, raw=False, knn=None):
         """(values, known) of the rows, (B, n_stats) each.
 
         ``k`` is the fold to leave out (-1: none), ``nb`` the training rows of
         the two neighbours (-1: none), ``on`` the visible id levels: a hidden
         gene loses its gene, project and condition means, a hidden run its
-        run mean and its neighbours, as a new gene or a new run would.
+        run mean and its neighbours, as a new gene or a new run would. Both
+        lose the similar runs. ``knn``: the (mean c, cover) of _similar.
         """
         gene_on, run_on, prj_on, cond_on = on
         n_r = self._other_folds(self.run[1], r, k)
@@ -814,6 +973,14 @@ class _CountStats:
                 sq = self._other_folds(table[2], idx, k) / n.clamp(min=1)
                 vals.append((sq - m ** 2).clamp(min=0).sqrt())
                 known.append((n > 1) & on_)
+        if self.knn:
+            if knn is None:
+                raise ValueError("stats_knn needs the similar runs")
+            mean_c, cov = knn
+            both = gene_on & run_on
+            vals += [mean_c - m_g, cov]
+            known += [torch.isfinite(mean_c) & both & (n_g > 0),
+                      torch.isfinite(cov) & both]
         v = torch.stack(vals, 1).float()
         kn = torch.stack(known, 1)
         if not raw:
@@ -826,13 +993,16 @@ class _CountStats:
         r = self.r
         k = torch.where(self.vis[i], r["fold"][i].long(),
                         torch.full_like(i, -1))
+        knn = (self.knn_val[i], self.knn_cover[i]) if self.knn else None
         return self.features(r["gene"][i].long(), r["run"][i].long(),
                              r["gp"][i].long(), r["gc"][i].long(), k,
-                             (r["nb_up"][i], r["nb_down"][i]), on, raw)
+                             (r["nb_up"][i], r["nb_down"][i]), on, raw, knn)
 
-    def external(self, g, r, gp, gc, nb, on):
-        """Statistics of rows outside the training rows (the test rows)."""
-        return self.features(g, r, gp, gc, torch.full_like(g, -1), nb, on)
+    def external(self, g, r, gp, gc, nb, on, knn=None):
+        """Statistics of rows outside the training rows (the test rows),
+        ``knn`` from ``similar``."""
+        return self.features(g, r, gp, gc, torch.full_like(g, -1), nb, on,
+                             knn=knn)
 
     @torch.no_grad()
     def fit_scale(self, i):
@@ -846,9 +1016,12 @@ class _CountStats:
         self.center, self.scale = mean, var.sqrt().clamp(min=1e-3)
 
     def for_predict(self):
-        """Drops what only the training rows need, once the fit is done."""
-        for name in ("run", "gp", "gc", "nb_up", "nb_down"):
+        """Drops what only the training rows need, once the fit is done.
+        The similar runs of the test rows still need the run of each row."""
+        for name in ("gp", "gc", "nb_up", "nb_down") + (
+                () if self.knn else ("run",)):
             self.r.pop(name, None)
+        self.knn_val = self.knn_cover = None
 
 
 # --- layers, each with its 2017 alternative --------------------------------
@@ -1222,7 +1395,8 @@ class _ExprTransformer(nn.Module):
         # missing token when a statistic does not exist for the row
         if cfg.count_stats not in ("off", "means", "all"):
             raise ValueError(f"unknown count_stats {cfg.count_stats}")
-        self.n_stats = len(_stat_names(cfg.count_stats, cfg.stats_sd))
+        self.n_stats = len(_stat_names(cfg.count_stats, cfg.stats_sd,
+                                       cfg.stats_knn))
         if self.n_stats:
             self.stat_tokens = _Numbers(self.n_stats, d)
             self.n_tokens += self.n_stats
@@ -1617,17 +1791,24 @@ class TransformerModel:
                 "fold": torch.as_tensor(fold).to(dev),
                 "nb_up": torch.as_tensor(up).to(dev),
                 "nb_down": torch.as_tensor(down).to(dev)}
+        geo = (_genome_layout(ix, dev) if cfg.stats_knn > 0 else None)
         stats = _CountStats(rows, ix.n_gene, ix.n_run, self.gp.n, self.gc.n,
                             cfg.stats_folds, cfg.count_stats == "all", dev,
-                            sd=cfg.stats_sd)
-        stats.build(torch.as_tensor(fit_rows).to(dev))
+                            sd=cfg.stats_sd, knn=cfg.stats_knn, geo=geo)
+        fit_dev = torch.as_tensor(fit_rows).to(dev)
+        stats.build(fit_dev)
         some = np.flatnonzero(fit_rows)
         some = some[::max(1, len(some) // 200_000)]
         stats.fit_scale(torch.as_tensor(some).to(dev))
         found = float(np.mean((up >= 0) | (down >= 0)))
+        knn = ""
+        if stats.knn:
+            seen = torch.isfinite(stats.knn_val[fit_dev]).float().mean()
+            knn = (f", the gene in {cfg.stats_knn} similar runs for "
+                   f"{float(seen):.0%} of the fit rows")
         self.log(f"count stats: {stats.n_stats} inputs, {cfg.stats_folds} "
                  f"folds of gene x block, a neighbour row for {found:.0%} of "
-                 f"the rows ({time.time() - t_start:.0f}s), "
+                 f"the rows{knn} ({time.time() - t_start:.0f}s), "
                  + (f"GPU {torch.cuda.memory_allocated() / 1e9:.2f} GB, "
                     if dev != "cpu" else "") + _ram())
         return stats
@@ -2137,6 +2318,10 @@ class TransformerModel:
         stats = getattr(self, "stats", None)
         if stats is not None:
             # the training rows of the two genome neighbours in the same run
+            # the gene in the runs most similar to the row's run
+            knn = (stats.similar(torch.as_tensor(gene).to(dev),
+                                 torch.as_tensor(run).to(dev))
+                   if stats.knn else None)
             nb = [_find_rows(self.row_key, self.row_order, of, gene, run,
                              self.ix.n_run)
                   for of in (self.up_gene, self.down_gene)]
@@ -2154,7 +2339,9 @@ class TransformerModel:
             on = tuple(o & known for o in on)
             st = (stats.external(g, r, dev_slice(gp, s, e),
                                  dev_slice(gc, s, e),
-                                 [dev_slice(a, s, e) for a in nb], on)
+                                 [dev_slice(a, s, e) for a in nb], on,
+                                 knn=(None if knn is None else
+                                      (knn[0][s:e], knn[1][s:e])))
                   if stats is not None else None)
             outs = []
             for net in nets:
