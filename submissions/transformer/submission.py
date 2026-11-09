@@ -342,6 +342,11 @@ PRESETS = {
     # most. Same sigma shifts as calmix, untried locally.
     # Platform 6.78 (A 6.51, B 6.67, C 7.17), 1st on 2026-11-08: A -0.06
     # again, five times the local floor gain over the similar runs alone.
+    # Sigma diagnostic of this model (2026-11-09, A40): refitted shifts
+    # A_full -0.49, A_block -0.26, B_condition -0.75, B_project -0.80,
+    # B_new -0.39, C -0.21. On held-out halves the current ones score
+    # 7.2672, the refitted ones 7.2649 at full strength and 7.2693 mixed:
+    # nothing to change.
     "mlp_stats_cf": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                      "epochs": 8.0, "count_stats": "all", "stats_knn": 100,
                      "stats_gknn": 30, "stats_mf": 32,

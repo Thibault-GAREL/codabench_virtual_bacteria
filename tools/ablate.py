@@ -202,6 +202,11 @@ SUITES = {
     # stats_mf): on the local A, R2 0.812 with the similar runs, 0.833 with
     # all three, and a linear NB-NLL correction of the mlp_stats mu gains
     # -0.021 with the similar runs, -0.033 with all three.
+    # Ran 2026-11-09 on an A40 (618 k rows/s, 2.6 times the T4) with
+    # --max-minutes 16.7 --epochs 8 --layer-every 0, commit 99c4fc8: A
+    # knn100 6.963, gknn30 6.940, mf32 6.951, cf 6.934 (6.932 in the sigma
+    # diagnostic, A repeats within 0.002, B and C move by up to 0.026
+    # between two identical fits), cf_mf64 6.980 (rank 64 hurts A).
     "cf": ({"_on_preset": True, "n_models": 1, "mixer": "mlp",
             "dropout": 0.1, "count_stats": "all", "stats_knn": 100}, {
         "knn100": {},
