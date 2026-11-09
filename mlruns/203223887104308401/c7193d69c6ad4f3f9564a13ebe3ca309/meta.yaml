@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/c7193d69c6ad4f3f9564a13ebe3ca309/artifacts
+end_time: 1794238541063
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: c7193d69c6ad4f3f9564a13ebe3ca309
+run_name: tf-cf-mf32_run-01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1794237682411
+status: 3
+tags: []
+user_id: root

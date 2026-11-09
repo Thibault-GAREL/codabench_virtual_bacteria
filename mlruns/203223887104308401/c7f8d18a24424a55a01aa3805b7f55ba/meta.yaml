@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/codabench_virtual_bacteria/mlruns/203223887104308401/c7f8d18a24424a55a01aa3805b7f55ba/artifacts
+end_time: 1794234981373
+entry_point_name: ''
+experiment_id: '203223887104308401'
+lifecycle_stage: active
+run_id: c7f8d18a24424a55a01aa3805b7f55ba
+run_name: diag-sigma-cf_run-01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1794234105327
+status: 3
+tags: []
+user_id: root
