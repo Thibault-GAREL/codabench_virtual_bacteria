@@ -356,6 +356,11 @@ PRESETS = {
     # the window (R2 0.595 to 0.629). The operons rebuilt from the
     # annotations match those of the clean dataset exactly. 21 s per build
     # with all the statistics on a GTX 1660 Ti for the 69 M local rows.
+    # Platform 6.80 (A 6.50, B 6.72, C 7.18) on 2026-11-09: no gain on C
+    # (internal C holdout -0.007 only), the window and the operon mostly
+    # repeat the up and down neighbours the network already reads. B +0.05
+    # follows its sigma shifts, which moved with the run (B_new +0.04
+    # against -0.06). Not kept.
     "mlp_stats_ctx": {**_SOCLE, "mixer": "mlp", "dropout": 0.1,
                       "epochs": 8.0, "count_stats": "all", "stats_knn": 100,
                       "stats_gknn": 30, "stats_mf": 32, "stats_ctx": True,
@@ -923,6 +928,11 @@ class _CountStats:
         """Sums per level and per fold over the visible rows ``vis``."""
         K, dev, r = self.k, self.device, self.r
         self.vis = vis
+        # what a previous build left goes first: the refit rebuilds on every
+        # row, and with the old values (7 x 74 M floats with all the
+        # statistics) the T4 ran out of memory once (2026-11-09)
+        self.cf = None
+        self.run = self.gene = self.gp = self.gc = None
         sel = torch.nonzero(vis).flatten()
 
         def table(name, n_sums):
